@@ -108,8 +108,8 @@ ImprovedStaggeredFermion5D<Impl>::ImprovedStaggeredFermion5D(GridCartesian      
     assert(FiveDimRedBlackGrid._simd_layout[0]==nsimd);
 
     for(int d=0;d<4;d++){
-      assert(FourDimGrid._simd_layout[d]=1);
-      assert(FourDimRedBlackGrid._simd_layout[d]=1);
+      assert(FourDimGrid._simd_layout[d]==1);
+      assert(FourDimRedBlackGrid._simd_layout[d]==1);
       assert(FiveDimRedBlackGrid._simd_layout[d+1]==1);
     }
 
