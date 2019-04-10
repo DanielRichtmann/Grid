@@ -571,6 +571,10 @@ namespace Grid {
                   << " reduction = "            << normFiltered / normRandom
                   << std::endl;
       }
+
+      for(int b = nn; b < Nbasis; b++) {
+        _subspace[b] = zero;
+      }
     }
 
     void DoChiralDoubling() {
@@ -1308,6 +1312,9 @@ namespace Grid {
                   << " <n|MdagM|n> filtered = " << normFiltered
                   << " reduction = "            << normFiltered / normRandom
                   << std::endl;
+      }
+      for(int b = nn; b < nbasis; b++) {
+        subspace[b] = zero;
       }
     }
 
