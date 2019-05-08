@@ -225,6 +225,18 @@ namespace Grid {
                   << "norm2(vec[" << n + nb << "]) = " << norm2(BasisVecs[n + nb]) << std::endl;
       }
     }
+
+    void writeLinkToEigenMatrixKernel(typename SiteLinkField::scalar_object const &linkMat, Eigen::MatrixXcd &eigenMat) {
+      for (int i = 0; i < Nbasis; ++i)
+        for (int j = 0; j < Nbasis; ++j)
+          eigenMat(i, j) = linkMat(i, j);
+    }
+
+    void writeEigenMatrixToLinkKernel(Eigen::MatrixXcd const &eigenMat, typename SiteLinkField::scalar_object &linkMat) {
+      for(int i = 0; i < Nbasis; ++i)
+        for(int j = 0; j < Nbasis; ++j)
+          linkMat(i, j) = eigenMat(i, j);
+    }
   };
 
 
@@ -354,6 +366,28 @@ namespace Grid {
 
     void chiralDoublingKernel(std::vector<FineFermionField> &BasisVecs) {
       std::cout << GridLogMessage << "Skipping chiral doubling as it is not necessary with twoSpinCoarseningPolicy" << std::endl;
+    }
+
+    void writeLinkToEigenMatrixKernel(typename SiteLinkField::scalar_object const &linkMat, Eigen::MatrixXcd &eigenMat) {
+      for (int s1 = 0; s1 < Ncs; ++s1)
+        for (int s2 = 0; s2 < Ncs; ++s2)
+          for (int c1 = 0; c1 < Nbasis; ++c1)
+            for (int c2 = 0; c2 < Nbasis; ++c2) {
+              int n1 = s1 * Nbasis + c1;
+              int n2 = s2 * Nbasis + c2;
+              eigenMat(n1, n2) = linkMat()(s1, s2)(c1, c2);
+            }
+    }
+
+    void writeEigenMatrixToLinkKernel(Eigen::MatrixXcd const &eigenMat, typename SiteLinkField::scalar_object &linkMat) {
+      for (int s1 = 0; s1 < Ncs; ++s1)
+        for (int s2 = 0; s2 < Ncs; ++s2)
+          for (int c1 = 0; c1 < Nbasis; ++c1)
+            for (int c2 = 0; c2 < Nbasis; ++c2) {
+              int n1 = s1 * Nbasis + c1;
+              int n2 = s2 * Nbasis + c2;
+              linkMat()(s1, s2)(c1, c2) = eigenMat(n1, n2);
+            }
     }
   };
 
@@ -583,7 +617,7 @@ namespace Grid {
   };
 
   template<class CoarseningPolicy>
-  class CoarsenedMatrixUsingPolicies : public SparseMatrixBase<typename CoarseningPolicy::FermionField>
+  class CoarsenedMatrixUsingPolicies : public CheckerBoardedSparseMatrixBase<typename CoarseningPolicy::FermionField>
                                      , public CoarseningPolicy {
   public:
 
@@ -599,24 +633,43 @@ namespace Grid {
     /////////////////////////////////////////////
 
     GridBase * _grid;
+    GridBase * _cbgrid;
     Geometry _geom;
+
     CartesianStencil<SiteSpinor, SiteSpinor> _stencil;
-    std::vector<LinkField> _Y; // Y = Kate's notation. TODO: With the TwoSpin policy, we could also have a Lattice<...> like in the Dirac operators
+    CartesianStencil<SiteSpinor, SiteSpinor> _stencilEven;
+    CartesianStencil<SiteSpinor, SiteSpinor> _stencilOdd;
+
+    std::vector<LinkField> _Y; // Y = Kate's notation
+    std::vector<LinkField> _YEven;
+    std::vector<LinkField> _YOdd;
+
+    LinkField _SelfStencilLinkInv;
+    LinkField _SelfStencilLinkInvEven;
+    LinkField _SelfStencilLinkInvOdd;
 
     /////////////////////////////////////////////
     // Member Functions
     /////////////////////////////////////////////
 
-    CoarsenedMatrixUsingPolicies(GridCartesian &CoarseGrid)
+    CoarsenedMatrixUsingPolicies(GridCartesian &CoarseGrid, GridRedBlackCartesian &CoarseRBGrid)
       : _grid(&CoarseGrid)
+      , _cbgrid(&CoarseRBGrid)
       , _geom(CoarseGrid._ndimension)
       , _stencil(&CoarseGrid, _geom.npoint, Even, _geom.directions, _geom.displacements)
+      , _stencilEven(&CoarseRBGrid, _geom.npoint, Even, _geom.directions, _geom.displacements)
+      , _stencilOdd(&CoarseRBGrid, _geom.npoint, Odd, _geom.directions, _geom.displacements)
       , _Y(_geom.npoint, &CoarseGrid)
-    {
+      , _YEven(_geom.npoint, &CoarseRBGrid)
+      , _YOdd(_geom.npoint, &CoarseRBGrid)
+      , _SelfStencilLinkInv(&CoarseGrid)
+      , _SelfStencilLinkInvEven(&CoarseRBGrid)
+      , _SelfStencilLinkInvOdd(&CoarseRBGrid) {
       std::cout << GridLogMessage << "Called ctor of CoarsenedMatrixUsingPolicies using Policy " << CoarseningPolicy::name() << std::endl;
     }
 
     GridBase *Grid(void) { return _grid; };
+    GridBase *RedBlackGrid(void) { return _cbgrid; };
 
     RealD M(const FermionField &in, FermionField &out) {
       conformable(_grid, in._grid);
@@ -660,15 +713,107 @@ namespace Grid {
     }
 
     void Mdiag(const FermionField &in, FermionField &out){
-      // use the self-coupling point of the stencil
-      auto p    = _geom.SelfStencilPoint();
-      auto dir  = _geom.directions[p];
-      auto disp = _geom.displacements[p];
-      Mdir(in, out, dir, disp);
+      Mooee(in, out); // just like for fermion operators
     }
 
     void Mdir(const FermionField &in, FermionField &out, int dir, int disp) {
-      conformable(Grid(), in._grid);
+      DhopDir(in, out, dir, disp);
+    }
+
+    // Need to do this temporarily, will be removed once the QCD namespace is gone
+#define DaggerNo   0
+#define DaggerYes  1
+#define InverseNo  0
+#define InverseYes 1
+
+    // half checkerboard operations
+    void Meooe(const FermionField &in, FermionField &out) {
+      if(in.checkerboard == Odd) {
+        DhopEO(in, out, DaggerNo);
+      } else {
+        DhopOE(in, out, DaggerNo);
+      }
+    }
+    void MeooeDag(const FermionField &in, FermionField &out) {
+      if(in.checkerboard == Odd) {
+        DhopEO(in, out, DaggerYes);
+      } else {
+        DhopOE(in, out, DaggerYes);
+      }
+    }
+
+    // same checkerboard operations
+    void Mooee(const FermionField &in, FermionField &out) {
+      MooeeInternal(in, out, DaggerNo, InverseNo);
+    }
+    void MooeeInv(const FermionField &in, FermionField &out) {
+      MooeeInternal(in, out, DaggerNo, InverseYes);
+    }
+    void MooeeDag(const FermionField &in, FermionField &out) {
+      MooeeInternal(in, out, DaggerYes, InverseNo);
+    }
+    void MooeeInvDag(const FermionField &in, FermionField &out) {
+      MooeeInternal(in, out, DaggerYes, InverseYes);
+    }
+    void MooeeInternal(const FermionField &in, FermionField &out, int dag, int inv) {
+      // Implementation along the lines of clover
+      out.checkerboard = in.checkerboard;
+      assert(in.checkerboard == Odd || in.checkerboard == Even);
+      LinkField *SelfStencil = nullptr;
+
+      if(in._grid->_isCheckerBoarded) {
+        if(in.checkerboard == Odd)
+          SelfStencil = (inv) ? &_SelfStencilLinkInvOdd : &_YOdd[_geom.SelfStencilPoint()];
+        else
+          SelfStencil = (inv) ? &_SelfStencilLinkInvEven : &_YEven[_geom.SelfStencilPoint()];
+      } else {
+        SelfStencil = (inv) ? &_SelfStencilLinkInv : &_Y[_geom.SelfStencilPoint()];
+      }
+
+      assert(SelfStencil != nullptr);
+
+      if(dag)
+        out = adj(*SelfStencil) * in;
+      else
+        out = *SelfStencil * in;
+    }
+
+#undef DaggerNo
+#undef DaggerYes
+#undef InverseNo
+#undef InverseYes
+
+    // non-hermitian hopping term; half cb or both
+    void Dhop(const FermionField &in, FermionField &out, int dag) {
+      conformable(in._grid, _grid); // verifies full grid
+      conformable(in._grid, out._grid);
+
+      out.checkerboard = in.checkerboard;
+
+      DhopInternal(_stencil, _Y, in, out, dag);
+    }
+    void DhopOE(const FermionField &in, FermionField &out, int dag) {
+      conformable(in._grid, _cbgrid);   // verifies half grid
+      conformable(in._grid, out._grid); // drops the cb check
+
+      assert(in.checkerboard == Even);
+      out.checkerboard = Odd;
+
+      DhopInternal(_stencilEven, _YOdd, in, out, dag);
+    }
+    void DhopEO(const FermionField &in, FermionField &out, int dag) {
+      conformable(in._grid, _cbgrid);   // verifies half grid
+      conformable(in._grid, out._grid); // drops the cb check
+
+      assert(in.checkerboard == Odd);
+      out.checkerboard = Even;
+
+      DhopInternal(_stencilOdd, _YEven, in, out, dag);
+    }
+
+    // internal impls
+    void DhopDir(const FermionField &in, FermionField &out, int dir, int disp) {
+      conformable(Grid(), in._grid); // verifies full grid
       conformable(in._grid, out._grid);
 
       SimpleCompressor<SiteSpinor> compressor;
@@ -697,6 +842,96 @@ namespace Grid {
         vstream(out._odata[ss], res);
       }
     }
+    void DhopInternal(CartesianStencil<SiteSpinor, SiteSpinor> &st, std::vector<LinkField> &Y, const FermionField &in, FermionField &out, int dag) {
+      if (dag) {
+        FermionField tmp(in._grid);   tmp.checkerboard = in.checkerboard;
+        FermionField tmp2(out._grid); tmp2.checkerboard = out.checkerboard;
+        G5C(tmp, in); // FIXME: This explicitly ties us to Galerkin coarsening
+
+        SimpleCompressor<SiteSpinor> compressor;
+        st.HaloExchange(tmp, compressor);
+
+        parallel_for(int ss = 0; ss < tmp._grid->oSites(); ss++) {
+          SiteSpinor    res = zero;
+          SiteSpinor    nbr;
+          int           ptype;
+          StencilEntry *SE;
+          for(int point = 0; point < _geom.npoint; point++) {
+            if(point != _geom.SelfStencilPoint()) {
+              SE = st.GetEntry(ptype, point, ss);
+
+              if(SE->_is_local && SE->_permute) {
+                permute(nbr, tmp._odata[SE->_offset], ptype);
+              } else if(SE->_is_local) {
+                nbr = tmp._odata[SE->_offset];
+              } else {
+                nbr = st.CommBuf()[SE->_offset];
+              }
+              CoarseningPolicy::multLinkKernel(res, Y, nbr, point, ss);
+            }
+          }
+          vstream(tmp2._odata[ss], res);
+        }
+        G5C(out, tmp2); // FIXME: This explicitly ties us to Galerkin coarsening
+      } else {
+        SimpleCompressor<SiteSpinor> compressor;
+        st.HaloExchange(in, compressor);
+
+        parallel_for(int ss = 0; ss < in._grid->oSites(); ss++) {
+          SiteSpinor    res = zero;
+          SiteSpinor    nbr;
+          int           ptype;
+          StencilEntry *SE;
+          for(int point = 0; point < _geom.npoint; point++) {
+            if(point != _geom.SelfStencilPoint()) {
+              SE = st.GetEntry(ptype, point, ss);
+
+              if(SE->_is_local && SE->_permute) {
+                permute(nbr, in._odata[SE->_offset], ptype);
+              } else if(SE->_is_local) {
+                nbr = in._odata[SE->_offset];
+              } else {
+                nbr = st.CommBuf()[SE->_offset];
+              }
+              CoarseningPolicy::multLinkKernel(res, Y, nbr, point, ss);
+            }
+          }
+          vstream(out._odata[ss], res);
+        }
+      }
+    }
+
+    void InvertSelfStencilPoint() {
+      int localVolume = Grid()->lSites();
+
+      int size = Ncs * Nbasis;
+      Eigen::MatrixXcd EigenSelfStencil    = Eigen::MatrixXcd::Zero(size, size);
+      Eigen::MatrixXcd EigenInvSelfStencil = Eigen::MatrixXcd::Zero(size, size);
+
+      std::vector<int> lcoor;
+      typename SiteLinkField::scalar_object SelfStencilLink = zero, InvSelfStencilLink = zero;
+
+      for(int site = 0; site < localVolume; site++) {
+        Grid()->LocalIndexToLocalCoor(site, lcoor);
+        EigenSelfStencil = Eigen::MatrixXcd::Zero(size, size);
+        peekLocalSite(SelfStencilLink, _Y[_geom.SelfStencilPoint()], lcoor);
+        InvSelfStencilLink = zero;
+
+        CoarseningPolicy::writeLinkToEigenMatrixKernel(SelfStencilLink, EigenSelfStencil);
+        EigenInvSelfStencil = EigenSelfStencil.inverse();
+        CoarseningPolicy::writeEigenMatrixToLinkKernel(EigenInvSelfStencil, InvSelfStencilLink);
+
+        pokeLocalSite(InvSelfStencilLink, _SelfStencilLinkInv, lcoor);
+      }
+    }
+    void FillHalfCbs() {
+      for(int p = 0; p < _geom.npoint; p++) {
+        pickCheckerboard(Even, _YEven[p], _Y[p]);
+        pickCheckerboard(Odd, _YOdd[p], _Y[p]);
+      }
+      pickCheckerboard(Even, _SelfStencilLinkInvEven, _SelfStencilLinkInv);
+      pickCheckerboard(Odd, _SelfStencilLinkInvOdd, _SelfStencilLinkInv);
+    }
 
     // NOTE: Do this temporarily as I can't put everything into the Policies (since it can't have Aggregation as a parameter)
     template<bool isTwoSpinVersion, typename std::enable_if<isTwoSpinVersion == false>::type * = nullptr>
@@ -711,6 +946,8 @@ namespace Grid {
                                                           {"PickBlocks" , GridPerfMonitor()},
                                                           {"ProjectToSubspace" , GridPerfMonitor()},
                                                           {"ConstructLinks" , GridPerfMonitor()},
+                                                          {"InvertSelfStencilPoint", GridPerfMonitor()},
+                                                          {"FillHalfCbs", GridPerfMonitor()},
 #if defined(SAVE_BLOCKPROJECTS)
                                                           {"InnerBlockSummation" , GridPerfMonitor()},
                                                           {"ShiftLinks" , GridPerfMonitor()}
@@ -885,7 +1122,15 @@ namespace Grid {
       }
       std::string saveBlockProjects = "false";
 #endif
+
+      PerfMonitors["InvertSelfStencilPoint"].Start();
+      InvertSelfStencilPoint();
+      PerfMonitors["InvertSelfStencilPoint"].Stop();
+      PerfMonitors["FillHalfCbs"].Start();
+      FillHalfCbs();
+      PerfMonitors["FillHalfCbs"].Stop();
       PerfMonitors["Total"].Stop();
+
       std::cout << GridLogMessage << "***************************************************************************" << std::endl;
       std::cout << GridLogMessage << "Time breakdown for CoarsenOperator with isTwoSpinVersion == false and saveBlockProjects = " << saveBlockProjects << std::endl;
       std::cout << GridLogMessage << "***************************************************************************" << std::endl;
@@ -923,6 +1168,8 @@ namespace Grid {
                                                           {"PickBlocks", GridPerfMonitor()},
                                                           {"ProjectToSubspace", GridPerfMonitor()},
                                                           {"ConstructLinks", GridPerfMonitor()},
+                                                          {"InvertSelfStencilPoint", GridPerfMonitor()},
+                                                          {"FillHalfCbs", GridPerfMonitor()},
 #if defined(SAVE_BLOCKPROJECTS)
                                                           {"InnerBlockSummation" , GridPerfMonitor()},
                                                           {"ShiftLinks", GridPerfMonitor()}
@@ -1103,7 +1350,14 @@ namespace Grid {
       std::string saveBlockProjects = "false";
 #endif
 
+      PerfMonitors["InvertSelfStencilPoint"].Start();
+      InvertSelfStencilPoint();
+      PerfMonitors["InvertSelfStencilPoint"].Stop();
+      PerfMonitors["FillHalfCbs"].Start();
+      FillHalfCbs();
+      PerfMonitors["FillHalfCbs"].Stop();
       PerfMonitors["Total"].Stop();
+
       std::cout << GridLogMessage << "***************************************************************************" << std::endl;
       std::cout << GridLogMessage << "Time breakdown for CoarsenOperator with isTwoSpinVersion == true and saveBlockProjects = " << saveBlockProjects << std::endl;
       std::cout << GridLogMessage << "***************************************************************************" << std::endl;
@@ -1337,7 +1591,7 @@ namespace Grid {
   // Fine Object == (per site) type of fine field
   // nbasis      == number of deflation vectors
   template<class Fobj,class CComplex,int nbasis>
-  class CoarsenedMatrix : public SparseMatrixBase<Lattice<iVector<CComplex,nbasis > > >  {
+  class CoarsenedMatrix : public CheckerBoardedSparseMatrixBase<Lattice<iVector<CComplex,nbasis > > >  {
   public:
     
     typedef iVector<CComplex,nbasis >             siteVector;
@@ -1351,20 +1605,30 @@ namespace Grid {
     // Data members
     ////////////////////
     Geometry         geom;
-    GridBase *       _grid; 
-    CartesianStencil<siteVector,siteVector> Stencil; 
+    GridBase *       _grid;
+    GridBase *       _cbgrid;
+
+    CartesianStencil<siteVector,siteVector> Stencil;
+    CartesianStencil<siteVector,siteVector> StencilEven;
+    CartesianStencil<siteVector,siteVector> StencilOdd;
 
     std::vector<CoarseMatrix> A;
+    std::vector<CoarseMatrix> AEven;
+    std::vector<CoarseMatrix> AOdd;
 
-      
+    CoarseMatrix SelfStencilLinkInv;
+    CoarseMatrix SelfStencilLinkInvEven;
+    CoarseMatrix SelfStencilLinkInvOdd;
+
     ///////////////////////
     // Interface
     ///////////////////////
     GridBase * Grid(void)         { return _grid; };   // this is all the linalg routines need to know
+    GridBase * RedBlackGrid(void) { return _cbgrid; }
 
     RealD M (const CoarseVector &in, CoarseVector &out){
 
-      conformable(_grid,in._grid);
+      conformable(_grid,in._grid); // verifies full grid
       conformable(in._grid,out._grid);
 
       SimpleCompressor<siteVector> compressor;
@@ -1406,19 +1670,114 @@ namespace Grid {
     };
 
     void Mdir(const CoarseVector &in, CoarseVector &out, int dir, int disp){
+      DhopDir(in, out, dir, disp);
+    };
 
-      conformable(_grid,in._grid);
-      conformable(in._grid,out._grid);
+    void Mdiag(const CoarseVector &in, CoarseVector &out){
+      // DhopDir(in, out, 0, 0); // old: use the self coupling (= last) point of the stencil
+      Mooee(in, out); // just like for fermion operators
+    };
+
+    // Need to do this temporarily, will be removed once the QCD namespace is gone
+#define DaggerNo   0
+#define DaggerYes  1
+#define InverseNo  0
+#define InverseYes 1
+
+    // half checkerboard operations
+    void Meooe(const CoarseVector &in, CoarseVector &out) {
+      if(in.checkerboard == Odd) {
+        DhopEO(in, out, DaggerNo);
+      } else {
+        DhopOE(in, out, DaggerNo);
+      }
+    }
+    void MeooeDag(const CoarseVector &in, CoarseVector &out) {
+      if(in.checkerboard == Odd) {
+        DhopEO(in, out, DaggerYes);
+      } else {
+        DhopOE(in, out, DaggerYes);
+      }
+    }
+
+    // same checkerboard operations
+    void Mooee(const CoarseVector &in, CoarseVector &out) {
+      MooeeInternal(in, out, DaggerNo, InverseNo);
+    }
+    void MooeeInv(const CoarseVector &in, CoarseVector &out) {
+      MooeeInternal(in, out, DaggerNo, InverseYes);
+    }
+    void MooeeDag(const CoarseVector &in, CoarseVector &out) {
+      MooeeInternal(in, out, DaggerYes, InverseNo);
+    }
+    void MooeeInvDag(const CoarseVector &in, CoarseVector &out) {
+      MooeeInternal(in, out, DaggerYes, InverseYes);
+    }
+    void MooeeInternal(const CoarseVector &in, CoarseVector &out, int dag, int inv) {
+      // Implementation along the lines of clover
+      out.checkerboard = in.checkerboard;
+      assert(in.checkerboard == Odd || in.checkerboard == Even);
+      CoarseMatrix *SelfStencil = nullptr;
+
+      if(in._grid->_isCheckerBoarded) {
+        if(in.checkerboard == Odd)
+          SelfStencil = (inv) ? &SelfStencilLinkInvOdd : &AOdd[geom.SelfStencilPoint()];
+        else
+          SelfStencil = (inv) ? &SelfStencilLinkInvEven : &AEven[geom.SelfStencilPoint()];
+      } else {
+        SelfStencil = (inv) ? &SelfStencilLinkInv : &A[geom.SelfStencilPoint()];
+      }
+
+      assert(SelfStencil != nullptr);
+
+      if(dag)
+        out = adj(*SelfStencil) * in;
+      else
+        out = *SelfStencil * in;
+    }
+
+#undef DaggerNo
+#undef DaggerYes
+#undef InverseNo
+#undef InverseYes
+
+    // non-hermitian hopping term; half cb or both
+    void Dhop(const CoarseVector &in, CoarseVector &out, int dag) {
+      conformable(in._grid, _grid); // verifies full grid
+      conformable(in._grid, out._grid);
+
+      out.checkerboard = in.checkerboard;
+
+      DhopInternal(Stencil, A, in, out, dag);
+    }
+    void DhopOE(const CoarseVector &in, CoarseVector &out, int dag) {
+      conformable(in._grid, _cbgrid);   // verifies half grid
+      conformable(in._grid, out._grid); // drops the cb check
+
+      assert(in.checkerboard == Even);
+      out.checkerboard = Odd;
+
+      DhopInternal(StencilEven, AOdd, in, out, dag);
+    }
+    void DhopEO(const CoarseVector &in, CoarseVector &out, int dag) {
+      conformable(in._grid, _cbgrid);   // verifies half grid
+      conformable(in._grid, out._grid); // drops the cb check
+
+      assert(in.checkerboard == Odd);
+      out.checkerboard = Even;
+
+      DhopInternal(StencilOdd, AEven, in, out, dag);
+    }
+
+    // internal impls
+    void DhopDir(const CoarseVector &in, CoarseVector &out, int dir, int disp) {
+      conformable(_grid, in._grid); // verifies full grid
+      conformable(in._grid, out._grid);
 
       SimpleCompressor<siteVector> compressor;
       Stencil.HaloExchange(in,compressor);
 
-      auto point = [dir, disp](){
-        if(dir == 0 and disp == 0)
-          return 8;
-        else
-          return (4 * dir + 1 - disp) / 2;
-      }();
+      auto point = geom.PointFromDirDisp(dir, disp);
 
       parallel_for(int ss=0;ss<Grid()->oSites();ss++){
         siteVector res = zero;
@@ -1441,67 +1800,129 @@ namespace Grid {
         vstream(out._odata[ss],res);
       }
     };
+    void DhopInternal(CartesianStencil<siteVector, siteVector> &st, std::vector<CoarseMatrix> &Y, const CoarseVector &in, CoarseVector &out, int dag) {
+      if (dag) {
+        CoarseVector tmp(in._grid);   tmp.checkerboard = in.checkerboard;
+        CoarseVector tmp2(out._grid); tmp2.checkerboard = out.checkerboard;
+        G5C(tmp, in);
 
-    void Mdiag(const CoarseVector &in, CoarseVector &out){
-      Mdir(in, out, 0, 0); // use the self coupling (= last) point of the stencil
-    };
+        SimpleCompressor<siteVector> compressor;
+        st.HaloExchange(tmp, compressor);
 
-    CoarsenedMatrix(GridCartesian &CoarseGrid) 	: 
+        parallel_for(int ss = 0; ss < tmp._grid->oSites(); ss++) {
+          siteVector    res = zero;
+          siteVector    nbr;
+          int           ptype;
+          StencilEntry *SE;
+          for(int point = 0; point < geom.npoint; point++) {
+            if(point != geom.SelfStencilPoint()) {
+              SE = st.GetEntry(ptype, point, ss);
 
-      _grid(&CoarseGrid),
-      geom(CoarseGrid._ndimension),
-      Stencil(&CoarseGrid,geom.npoint,Even,geom.directions,geom.displacements),
-      A(geom.npoint,&CoarseGrid)
-    {
-    };
+              if(SE->_is_local && SE->_permute) {
+                permute(nbr, tmp._odata[SE->_offset], ptype);
+              } else if(SE->_is_local) {
+                nbr = tmp._odata[SE->_offset];
+              } else {
+                nbr = st.CommBuf()[SE->_offset];
+              }
+              res = res + Y[point]._odata[ss] * nbr;
+            }
+          }
+          vstream(tmp2._odata[ss], res);
+        }
+        G5C(out, tmp2);
+      } else {
+        SimpleCompressor<siteVector> compressor;
+        st.HaloExchange(in, compressor);
 
-    void CoarsenOperator(GridBase *FineGrid,LinearOperatorBase<Lattice<Fobj> > &linop,
-			 Aggregation<Fobj,CComplex,nbasis> & Subspace){
+        parallel_for(int ss = 0; ss < in._grid->oSites(); ss++) {
+          siteVector    res = zero;
+          siteVector    nbr;
+          int           ptype;
+          StencilEntry *SE;
+          for(int point = 0; point < geom.npoint; point++) {
+            if(point != geom.SelfStencilPoint()) {
+              SE = st.GetEntry(ptype, point, ss);
 
-      std::map<std::string, GridPerfMonitor> PerfMonitors {
-                                                          {"Total" , GridPerfMonitor()},
-                                                          {"Misc" , GridPerfMonitor()},
-                                                          {"Orthogonalise" , GridPerfMonitor()},
-                                                          {"Copy" , GridPerfMonitor()},
-                                                          {"LatticeCoord" , GridPerfMonitor()},
-                                                          {"ApplyOp" , GridPerfMonitor()},
-                                                          {"PickBlocks" , GridPerfMonitor()},
-                                                          {"ProjectToSubspace" , GridPerfMonitor()},
-                                                          {"ConstructLinks" , GridPerfMonitor()}
-                                                          };
+              if(SE->_is_local && SE->_permute) {
+                permute(nbr, in._odata[SE->_offset], ptype);
+              } else if(SE->_is_local) {
+                nbr = in._odata[SE->_offset];
+              } else {
+                nbr = st.CommBuf()[SE->_offset];
+              }
+              res = res + Y[point]._odata[ss] * nbr;
+            }
+          }
+          vstream(out._odata[ss], res);
+        }
+      }
+    }
 
-      PerfMonitors["Total"].Start();
-      PerfMonitors["Misc"].Start();
+    CoarsenedMatrix(GridCartesian &CoarseGrid, GridRedBlackCartesian &CoarseRBGrid)
+      : _grid(&CoarseGrid)
+      , _cbgrid(&CoarseRBGrid)
+      , geom(CoarseGrid._ndimension)
+      , Stencil(&CoarseGrid, geom.npoint, Even, geom.directions, geom.displacements)
+      , StencilEven(&CoarseRBGrid, geom.npoint, Even, geom.directions, geom.displacements)
+      , StencilOdd(&CoarseRBGrid, geom.npoint, Odd, geom.directions, geom.displacements)
+      , A(geom.npoint, &CoarseGrid)
+      , AEven(geom.npoint, &CoarseRBGrid) // TODO: What do we do with the last stencil point here?
+      , AOdd(geom.npoint, &CoarseRBGrid)
+      , SelfStencilLinkInv(&CoarseGrid)
+      , SelfStencilLinkInvEven(&CoarseRBGrid)
+      , SelfStencilLinkInvOdd(&CoarseRBGrid)
+    {}; // TODO: What do we do with the last stencil point here?
 
-      FineField iblock(FineGrid); // contributions from within this block
-      FineField oblock(FineGrid); // contributions from outwith this block
+    void CoarsenOperator(GridBase *FineGrid, LinearOperatorBase<Lattice<Fobj>> &linop, Aggregation<Fobj, CComplex, nbasis> &Subspace){
 
-      FineField     phi(FineGrid);
-      FineField     tmp(FineGrid);
-      FineField     zz(FineGrid); zz=zero;
-      FineField    Mphi(FineGrid);
+      std::map<std::string, GridPerfMonitor> PerfMonitors{
+                                                          {"Total", GridPerfMonitor()},
+                                                          {"Misc", GridPerfMonitor()},
+                                                          {"Orthogonalise", GridPerfMonitor()},
+                                                          {"Copy", GridPerfMonitor()},
+                                                          {"LatticeCoord", GridPerfMonitor()},
+                                                          {"ApplyOp", GridPerfMonitor()},
+                                                          {"PickBlocks", GridPerfMonitor()},
+                                                          {"ProjectToSubspace", GridPerfMonitor()},
+                                                          {"ConstructLinks", GridPerfMonitor()},
+                                                          {"InvertSelfStencilPoint", GridPerfMonitor()},
+                                                          {"FillHalfCbs", GridPerfMonitor()}
+      };
 
-      Lattice<iScalar<vInteger> > coor(FineGrid);
+    PerfMonitors["Total"].Start();
+    PerfMonitors["Misc"].Start();
 
-      CoarseVector iProj(Grid()); 
-      CoarseVector oProj(Grid()); 
-      CoarseScalar InnerProd(Grid()); 
-      PerfMonitors["Misc"].Stop();
+    FineField iblock(FineGrid); // contributions from within this block
+    FineField oblock(FineGrid); // contributions from outwith this block
 
-      PerfMonitors["Orthogonalise"].Start();
-      // Orthogonalise the subblocks over the basis
-      Subspace.Orthogonalise(1);
-      PerfMonitors["Orthogonalise"].Stop();
+    FineField phi(FineGrid);
+    FineField tmp(FineGrid);
+    FineField zz(FineGrid);
+    zz = zero;
+    FineField Mphi(FineGrid);
 
-      PerfMonitors["Misc"].Start();
-      // Compute the matrix elements of linop between this orthonormal
-      // set of vectors.
-      int self_stencil=-1;
-      for(int p=0;p<geom.npoint;p++){ 
-	A[p]=zero;
-	if( geom.displacements[p]==0){
-	  self_stencil=p;
-	}
+    Lattice<iScalar<vInteger>> coor(FineGrid);
+
+    CoarseVector iProj(Grid());
+    CoarseVector oProj(Grid());
+    CoarseScalar InnerProd(Grid());
+    PerfMonitors["Misc"].Stop();
+
+    PerfMonitors["Orthogonalise"].Start();
+    // Orthogonalise the subblocks over the basis
+    Subspace.Orthogonalise(1);
+    PerfMonitors["Orthogonalise"].Stop();
+
+    PerfMonitors["Misc"].Start();
+    // Compute the matrix elements of linop between this orthonormal
+    // set of vectors.
+    int self_stencil = -1;
+    for(int p = 0; p < geom.npoint; p++) {
+      A[p] = zero;
+      if(geom.displacements[p] == 0) {
+        self_stencil = p;
+      }
       }
       assert(self_stencil!=-1);
       PerfMonitors["Misc"].Stop();
@@ -1570,9 +1991,17 @@ namespace Grid {
 	    }
 	  }
           PerfMonitors["ConstructLinks"].Stop();
-	}
+        }
       }
+
+      PerfMonitors["InvertSelfStencilPoint"].Start();
+      InvertSelfStencilPoint();
+      PerfMonitors["InvertSelfStencilPoint"].Stop();
+      PerfMonitors["FillHalfCbs"].Start();
+      FillHalfCbs();
+      PerfMonitors["FillHalfCbs"].Stop();
       PerfMonitors["Total"].Stop();
+
       std::cout << GridLogMessage << "***************************************************************************" << std::endl;
       std::cout << GridLogMessage << "Time breakdown for CoarsenOperator for original implementation" << std::endl;
       std::cout << GridLogMessage << "***************************************************************************" << std::endl;
@@ -1656,8 +2085,42 @@ namespace Grid {
       std::cout<<GridLogMessage<<"Norm diff local "<< norm2(Diff)<<std::endl;
       std::cout<<GridLogMessage<<"Norm local "<< norm2(A[8])<<std::endl;
     }
-    
-  };
 
+    void InvertSelfStencilPoint() {
+      int localVolume = Grid()->lSites();
+
+      Eigen::MatrixXcd EigenSelfStencil    = Eigen::MatrixXcd::Zero(nbasis, nbasis);
+      Eigen::MatrixXcd EigenInvSelfStencil = Eigen::MatrixXcd::Zero(nbasis, nbasis);
+
+      std::vector<int> lcoor;
+      typename iMatrix<CComplex, nbasis>::scalar_object SelfStencilLink = zero, InvSelfStencilLink = zero;
+      for(int site = 0; site < localVolume; site++) {
+        Grid()->LocalIndexToLocalCoor(site, lcoor);
+        EigenSelfStencil = Eigen::MatrixXcd::Zero(nbasis, nbasis);
+        peekLocalSite(SelfStencilLink, A[geom.SelfStencilPoint()], lcoor);
+        InvSelfStencilLink = zero;
+
+        for (int i = 0; i < nbasis; ++i)
+          for (int j = 0; j < nbasis; ++j)
+            EigenSelfStencil(i, j) = SelfStencilLink(i, j);
+
+        EigenInvSelfStencil = EigenSelfStencil.inverse();
+
+        for(int i = 0; i < nbasis; ++i)
+          for(int j = 0; j < nbasis; ++j)
+            InvSelfStencilLink(i, j) = EigenInvSelfStencil(i, j);
+
+        pokeLocalSite(InvSelfStencilLink, SelfStencilLinkInv, lcoor);
+      }
+    }
+    void FillHalfCbs() {
+      for(int p = 0; p < geom.npoint; p++) {
+        pickCheckerboard(Even, AEven[p], A[p]);
+        pickCheckerboard(Odd, AOdd[p], A[p]);
+      }
+      pickCheckerboard(Even, SelfStencilLinkInvEven, SelfStencilLinkInv);
+      pickCheckerboard(Odd, SelfStencilLinkInvOdd, SelfStencilLinkInv);
+    }
+  };
 }
 #endif

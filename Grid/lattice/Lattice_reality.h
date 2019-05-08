@@ -40,6 +40,8 @@ namespace Grid {
 
     template<class vobj> inline Lattice<vobj> adj(const Lattice<vobj> &lhs){
         Lattice<vobj> ret(lhs._grid);
+        ret.checkerboard = lhs.checkerboard;
+        conformable(ret, lhs);
 	parallel_for(int ss=0;ss<lhs._grid->oSites();ss++){
             ret._odata[ss] = adj(lhs._odata[ss]);
         }
@@ -48,6 +50,8 @@ namespace Grid {
 
     template<class vobj> inline Lattice<vobj> conjugate(const Lattice<vobj> &lhs){
         Lattice<vobj> ret(lhs._grid);
+        ret.checkerboard = lhs.checkerboard;
+        conformable(ret, lhs);
 	parallel_for(int ss=0;ss<lhs._grid->oSites();ss++){
 	  ret._odata[ss] = conjugate(lhs._odata[ss]);
         }
