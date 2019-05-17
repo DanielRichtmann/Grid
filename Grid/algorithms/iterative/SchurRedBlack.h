@@ -394,6 +394,68 @@ namespace Grid {
   };
 
   ///////////////////////////////////////////////////////////////////////////////////////////////////////
+  // Site diagonal has Mooee on it. To be used with non-herm solver
+  ///////////////////////////////////////////////////////////////////////////////////////////////////////
+  template<class Field> class SchurRedBlackDiagMooeeNonHermSolve : public SchurRedBlackBase<Field> {
+  public:
+    typedef CheckerBoardedSparseMatrixBase<Field> Matrix;
+
+    SchurRedBlackDiagMooeeNonHermSolve(OperatorFunction<Field> &RBSolver, const bool initSubGuess = false)
+      : SchurRedBlackBase<Field> (RBSolver,initSubGuess) {};
+
+
+    //////////////////////////////////////////////////////
+    // Override RedBlack specialisation
+    //////////////////////////////////////////////////////
+    virtual void RedBlackSource(Matrix & _Matrix,const Field &src, Field &src_e,Field &src_o)
+    {
+      GridBase *grid = _Matrix.RedBlackGrid();
+      GridBase *fgrid= _Matrix.Grid();
+
+      Field   tmp(grid);
+      Field  Mtmp(grid);
+
+      pickCheckerboard(Even,src_e,src);
+      pickCheckerboard(Odd ,src_o,src);
+
+      /////////////////////////////////////////////////////
+      // src_o = source_o - Moe MeeInv source_e
+      /////////////////////////////////////////////////////
+      _Matrix.MooeeInv(src_e,tmp);     assert(  tmp.checkerboard ==Even);
+      _Matrix.Meooe   (tmp,Mtmp);      assert( Mtmp.checkerboard ==Odd);
+      src_o=src_o-Mtmp;                assert(src_o.checkerboard ==Odd);
+    }
+    virtual void RedBlackSolution(Matrix & _Matrix,const Field &sol_o, const Field &src_e,Field &sol)
+    {
+      GridBase *grid = _Matrix.RedBlackGrid();
+      GridBase *fgrid= _Matrix.Grid();
+
+      Field   tmp(grid);
+      Field  sol_e(grid);
+      Field  src_e_i(grid);
+      ///////////////////////////////////////////////////
+      // sol_e = M_ee^-1 * ( src_e - Meo sol_o )...
+      ///////////////////////////////////////////////////
+      _Matrix.Meooe(sol_o,tmp);          assert(    tmp.checkerboard ==Even);
+      src_e_i = src_e-tmp;               assert(src_e_i.checkerboard ==Even);
+      _Matrix.MooeeInv(src_e_i,sol_e);   assert(  sol_e.checkerboard ==Even);
+
+      setCheckerboard(sol,sol_e); assert(  sol_e.checkerboard ==Even);
+      setCheckerboard(sol,sol_o); assert(  sol_o.checkerboard ==Odd );
+    }
+    virtual void RedBlackSolve   (Matrix & _Matrix,const Field &src_o, Field &sol_o)
+    {
+      SchurDiagMooeeOperator<Matrix,Field> _OpEO(_Matrix);
+      this->_HermitianRBSolver(_OpEO,src_o,sol_o);  assert(sol_o.checkerboard==Odd);
+      // NOTE: ^ in this case is a solver for non-hermitian matrices, but the variable is named that in the base class
+    };
+    virtual void RedBlackSolve   (Matrix & _Matrix,const std::vector<Field> &src_o,  std::vector<Field> &sol_o)
+    {
+      assert(0); // We don't have non-herm solvers for multiple rhs at the moment -> TODO
+    }
+  };
+
+  ///////////////////////////////////////////////////////////////////////////////////////////////////////
   // Site diagonal is identity, right preconditioned by Mee^inv
   // ( 1 - Meo Moo^inv Moe Mee^inv  ) phi =( 1 - Meo Moo^inv Moe Mee^inv  ) Mee psi =  = eta  = eta
   //=> psi = MeeInv phi
