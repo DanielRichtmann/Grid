@@ -192,9 +192,10 @@ template<class Field> void analyseTestVectors(LinearOperatorBase<Field> &Linop, 
 
 struct LevelInfo {
 public:
-  std::vector<std::vector<int>> Seeds;
-  std::vector<GridCartesian *>  Grids;
-  std::vector<GridParallelRNG>  PRNGs;
+  std::vector<std::vector<int>>        Seeds;
+  std::vector<GridCartesian *>         Grids;
+  std::vector<GridRedBlackCartesian *> RBGrids;
+  std::vector<GridParallelRNG>         PRNGs;
 
   LevelInfo(GridCartesian *FineGrid, MultiGridParams const &mgParams) {
 
@@ -204,7 +205,9 @@ public:
 
     // set up values for finest grid
     Grids.push_back(FineGrid);
-    Seeds.push_back((FineGrid->Nd() == 4) ? std::vector<int>{1, 2, 3, 4} : std::vector<int> { 5, 6, 7, 8 });
+    RBGrids.push_back((FineGrid->Nd() == 4) ? QCD::SpaceTimeGrid::makeFourDimRedBlackGrid(Grids.back())
+                                            : QCD::SpaceTimeGrid::makeFiveDimRedBlackGrid(1, Grids.back()));
+    Seeds.push_back((FineGrid->Nd() == 4) ? std::vector<int>{1, 2, 3, 4} : std::vector<int>{5, 6, 7, 8});
     PRNGs.push_back(GridParallelRNG(Grids.back()));
     PRNGs.back().SeedFixedIntegers(Seeds.back());
 
@@ -228,8 +231,10 @@ public:
       GridCartesian * tmpGrid4d = QCD::SpaceTimeGrid::makeFourDimGrid(fullDimensions4d, simdLayout4d, mpiLayout4d);
       if(Nd == 4) {
         Grids.push_back(tmpGrid4d);
+        RBGrids.push_back(QCD::SpaceTimeGrid::makeFourDimRedBlackGrid(tmpGrid4d));
       } else {
         Grids.push_back(QCD::SpaceTimeGrid::makeFiveDimGrid(1, tmpGrid4d));
+        RBGrids.push_back(QCD::SpaceTimeGrid::makeFiveDimRedBlackGrid(1, tmpGrid4d));
       }
 
       PRNGs.push_back(GridParallelRNG(Grids[level]));
@@ -241,6 +246,7 @@ public:
     for(int level = 0; level < mgParams.nLevels; ++level) {
       std::cout << GridLogMessage << "level = " << level << ":" << std::endl;
       Grids[level]->show_decomposition();
+      RBGrids[level]->show_decomposition();
     }
   }
 
@@ -368,7 +374,7 @@ public:
     , _FineMatrix(FineMat)
     , _SmootherMatrix(SmootherMat)
     , _Aggregates(_LevelInfo.Grids[_NextCoarserLevel], _LevelInfo.Grids[_CurrentLevel], 0)
-    , _CoarseMatrix(*_LevelInfo.Grids[_NextCoarserLevel])
+    , _CoarseMatrix(*_LevelInfo.Grids[_NextCoarserLevel], *_LevelInfo.RBGrids[_NextCoarserLevel])
     , _FineMdagMOp(_FineMatrix)
     , _FineSmootherMdagMOp(_SmootherMatrix)
     , _FineSrc(_LevelInfo.Grids[_CurrentLevel])
