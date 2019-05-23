@@ -50,8 +50,9 @@ int main (int argc, char ** argv)
   for(int d=0;d<clatt.size();d++){
     clatt[d] = clatt[d]/2;
   }
-  GridCartesian *Coarse4d =  SpaceTimeGrid::makeFourDimGrid(clatt, GridDefaultSimd(Nd,vComplex::Nsimd()),GridDefaultMpi());;
-  GridCartesian *Coarse5d =  SpaceTimeGrid::makeFiveDimGrid(1,Coarse4d);
+  GridCartesian         * Coarse4d   = SpaceTimeGrid::makeFourDimGrid(clatt, GridDefaultSimd(Nd,vComplex::Nsimd()),GridDefaultMpi());;
+  GridCartesian         * Coarse5d   = SpaceTimeGrid::makeFiveDimGrid(1,Coarse4d);
+  GridRedBlackCartesian * CoarseRB5d = SpaceTimeGrid::makeFiveDimRedBlackGrid(1,Coarse4d);
 
   std::vector<int> seeds4({1,2,3,4});
   std::vector<int> seeds5({5,6,7,8});
@@ -100,7 +101,7 @@ int main (int argc, char ** argv)
   Aggregates.CreateSubspace(RNG5,HermDefOp);
 
 
-  LittleDiracOperator LittleDiracOp(*Coarse5d);
+  LittleDiracOperator LittleDiracOp(*Coarse5d,*CoarseRB5d);
   LittleDiracOp.CoarsenOperator(FGrid,HermIndefOp,Aggregates);
   
   CoarseVector c_src (Coarse5d);

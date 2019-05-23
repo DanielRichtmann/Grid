@@ -494,8 +494,9 @@ int main (int argc, char ** argv)
   for(int d=0;d<clatt.size();d++){
     clatt[d] = clatt[d]/block[d];
   }
-  GridCartesian *Coarse4d =  SpaceTimeGrid::makeFourDimGrid(clatt, GridDefaultSimd(Nd,vComplex::Nsimd()),GridDefaultMpi());;
-  GridCartesian *Coarse5d =  SpaceTimeGrid::makeFiveDimGrid(1,Coarse4d);
+  GridCartesian         * Coarse4d   = SpaceTimeGrid::makeFourDimGrid(clatt, GridDefaultSimd(Nd,vComplex::Nsimd()),GridDefaultMpi());;
+  GridCartesian         * Coarse5d   = SpaceTimeGrid::makeFiveDimGrid(1,Coarse4d);
+  GridRedBlackCartesian * CoarseRB5d = SpaceTimeGrid::makeFiveDimRedBlackGrid(1,Coarse4d);
 
   std::vector<int> seeds4({1,2,3,4});
   std::vector<int> seeds5({5,6,7,8});
@@ -581,7 +582,7 @@ int main (int argc, char ** argv)
   std::cout<<GridLogMessage << "**************************************************"<< std::endl;
   Gamma5R5HermitianLinearOperator<DomainWallFermionR,LatticeFermion> HermIndefOp(Ddwf);
   Gamma5R5HermitianLinearOperator<DomainWallFermionR,LatticeFermion> HermIndefOpDD(DdwfDD);
-  CoarsenedMatrix<vSpinColourVector,vTComplex,nbasis> LDOp(*Coarse5d);
+  CoarsenedMatrix<vSpinColourVector,vTComplex,nbasis> LDOp(*Coarse5d, *CoarseRB5d);
   LDOp.CoarsenOperator(FGrid,HermIndefOp,Aggregates);
 
   std::cout<<GridLogMessage << "**************************************************"<< std::endl;

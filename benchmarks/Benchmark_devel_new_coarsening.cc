@@ -182,6 +182,7 @@ int main(int argc, char **argv) {
   GridCartesian *        FGrid   = SpaceTimeGrid::makeFourDimGrid(GridDefaultLatt(), GridDefaultSimd(Nd, vComplex::Nsimd()), GridDefaultMpi());
   GridCartesian *        CGrid   = SpaceTimeGrid::makeFourDimGrid(clatt, GridDefaultSimd(Nd, vComplex::Nsimd()), GridDefaultMpi());
   GridRedBlackCartesian *FrbGrid = SpaceTimeGrid::makeFourDimRedBlackGrid(FGrid);
+  GridRedBlackCartesian *CrbGrid = SpaceTimeGrid::makeFourDimRedBlackGrid(CGrid);
 
   FGrid->show_decomposition();
   CGrid->show_decomposition();
@@ -222,9 +223,9 @@ int main(int argc, char **argv) {
   //                         Setup of CoarsenedMatrix                        //
   /////////////////////////////////////////////////////////////////////////////
 
-  OriginalCoarsenedMatrix originalCoarsenedMatrix(*CGrid);
-  OneSpinCoarsenedMatrix oneSpinCoarsenedMatrix(*CGrid);
-  TwoSpinCoarsenedMatrix twoSpinCoarsenedMatrix(*CGrid);
+  OriginalCoarsenedMatrix originalCoarsenedMatrix(*CGrid, *CrbGrid);
+  OneSpinCoarsenedMatrix oneSpinCoarsenedMatrix(*CGrid, *CrbGrid);
+  TwoSpinCoarsenedMatrix twoSpinCoarsenedMatrix(*CGrid, *CrbGrid);
 
   /////////////////////////////////////////////////////////////////////////////
   //                     Setup of vectors for Benchmarks                     //

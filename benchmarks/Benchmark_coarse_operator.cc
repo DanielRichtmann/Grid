@@ -56,14 +56,15 @@ int main(int argc, char **argv) {
   typedef CoarsenedMatrix<vSpinColourVector, vTComplex, nBasis> CoarseDiracMatrix;
   typedef CoarseDiracMatrix::CoarseVector                       CoarseVector;
 
-  GridCartesian *CGrid = SpaceTimeGrid::makeFourDimGrid(GridDefaultLatt(), GridDefaultSimd(Nd, vComplex::Nsimd()), GridDefaultMpi());
+  GridCartesian *        CGrid   = SpaceTimeGrid::makeFourDimGrid(GridDefaultLatt(), GridDefaultSimd(Nd, vComplex::Nsimd()), GridDefaultMpi());
+  GridRedBlackCartesian *CrbGrid = SpaceTimeGrid::makeFourDimRedBlackGrid(CGrid);
 
   CGrid->show_decomposition();
 
   GridParallelRNG CPRNG(CGrid);
   CPRNG.SeedFixedIntegers(seeds);
 
-  CoarseDiracMatrix CoarseMatrix(*CGrid);
+  CoarseDiracMatrix CoarseMatrix(*CGrid, *CrbGrid);
   for(auto &elem : CoarseMatrix.A) random(CPRNG, elem);
 
   CoarseVector CoarseVecIn(CGrid);
