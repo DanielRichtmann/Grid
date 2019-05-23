@@ -53,7 +53,8 @@ public:
                                   std::vector<int>,              kCycleMaxInnerIter,   // size == nLevels - 1
                                   double,                        coarseSolverTol,
                                   int,                           coarseSolverMaxOuterIter,
-                                  int,                           coarseSolverMaxInnerIter
+                                  int,                           coarseSolverMaxInnerIter,
+                                  bool,                          coarseSolverUseRBPrec
                                   );
 
   // constructor with default values
@@ -70,7 +71,8 @@ public:
                   std::vector<int>              _kCycleMaxInnerIter       = {5},
                   double                        _coarseSolverTol          = 5e-2,
                   int                           _coarseSolverMaxOuterIter = 10,
-                  int                           _coarseSolverMaxInnerIter = 500
+                  int                           _coarseSolverMaxInnerIter = 500,
+                  bool                          _coarseSolverUseRBPrec    = true
                   )
   : nLevels(_nLevels)
   , blockSizes(_blockSizes)
@@ -86,6 +88,7 @@ public:
   , coarseSolverTol(_coarseSolverTol)
   , coarseSolverMaxOuterIter(_coarseSolverMaxOuterIter)
   , coarseSolverMaxInnerIter(_coarseSolverMaxInnerIter)
+  , coarseSolverUseRBPrec(_coarseSolverUseRBPrec)
   {}
 };
 
@@ -972,10 +975,14 @@ public:
     // On the coarsest level we only have what I above call the fine level, no coarse one
     GeneralisedMinimalResidual<FineVector> fineGMRES(
       _MultiGridParams.coarseSolverTol, coarseSolverMaxIter, _MultiGridParams.coarseSolverMaxInnerIter, false);
+    SchurRedBlackDiagMooeeNonHermSolve<FineVector> fineRBGMRES(fineGMRES);
     _SolveMiscTimer.Stop();
 
     _SolveSmootherTimer.Start();
-    fineGMRES(_FineMdagMOp, in, out);
+    if(_MultiGridParams.coarseSolverUseRBPrec)
+      fineRBGMRES(_FineMatrix, in, out);
+    else
+      fineGMRES(_FineMdagMOp, in, out);
     _SolveSmootherTimer.Stop();
 
     _SolveTotalTimer.Stop();
