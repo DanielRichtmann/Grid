@@ -95,6 +95,8 @@ build*/*
 build.sh
 .vscode
 *.code-workspace
+.ccls-cache
+.cquery_cached_index
 
 # Eigen source #
 ################
@@ -114,14 +116,4 @@ gh-pages/
 #####################
 Grid/qcd/spin/gamma-gen/*.h
 Grid/qcd/spin/gamma-gen/*.cc
-
-# vs code editor files #
-########################
-.vscode/
-.vscode/settings.json
-settings.json
-
-# emacs language server cache directories #
-###########################################
-.ccls-cache
-.cquery_cached_index
+Grid/util/Version.h
