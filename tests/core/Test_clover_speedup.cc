@@ -109,51 +109,6 @@ public:
     autoView(in_v, in, AcceleratorRead);
     autoView(out_v, out, AcceleratorWrite);
 
-#if defined VERSION_1
-    // first version
-    out = Zero();
-    accelerator_for(ss, clov.Grid()->oSites(), 1, {
-      for(int block=0; block<Nhs; block++) {
-        int s_start = block*Nhs;
-        for(int i=0; i<Nred; i++) {
-          for(int j=0; j<Nred; j++) {
-            int si = s_start + i/Nc, ci = i%Nc;
-            int sj = s_start + j/Nc, cj = j%Nc;
-            if(i <= j) {
-              out_v[ss]()(si)(ci) = out_v[ss]()(si)(ci) + clov_v[ss]()(block)(index2(i,j)) * in_v[ss]()(sj)(cj);
-            } else {
-              out_v[ss]()(si)(ci) = out_v[ss]()(si)(ci) + conjugate(clov_v[ss]()(block)(index2(i, j))) * in_v[ss]()(sj)(cj);
-            }
-          }
-        }
-      }
-    });
-#endif
-
-#if defined VERSION_2
-    // second version
-    typedef decltype(coalescedRead(out_v[0])) calcSpinor;
-    accelerator_for(ss, clov.Grid()->oSites(), Simd::Nsimd(), {
-      calcSpinor res = Zero();
-      for(int block=0; block<Nhs; block++) {
-        int s_start = block*Nhs;
-        for(int i=0; i<Nred; i++) {
-          for(int j=0; j<Nred; j++) {
-            int si = s_start + i/Nc, ci = i%Nc;
-            int sj = s_start + j/Nc, cj = j%Nc;
-            if(i <= j) {
-              res()(si)(ci) = res()(si)(ci) + clov_v(ss)()(block)(index2(i,j)) * in_v(ss)()(sj)(cj);
-            } else {
-              res()(si)(ci) = res()(si)(ci) + conjugate(clov_v(ss)()(block)(index2(i, j))) * in_v(ss)()(sj)(cj);
-            }
-          }
-        }
-      }
-      coalescedWrite(out_v[ss], res);
-    });
-#endif
-
-#if defined VERSION_3
     // third version
     typedef decltype(coalescedRead(out_v[0])) calcSpinor;
     accelerator_for(ss, clov.Grid()->oSites(), Simd::Nsimd(), {
@@ -176,7 +131,6 @@ public:
       }
       coalescedWrite(out_v[ss], res);
     });
-#endif
 
     // NOTE:
     // - The trend seems to be that the larger the lattice is, the more version 2 and 3 outperform version 1
