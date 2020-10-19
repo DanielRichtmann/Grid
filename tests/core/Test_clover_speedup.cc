@@ -168,19 +168,13 @@ private:
     });
   }
 
-  accelerator_inline int triangle_index(int i, int j) const {
-    assert(i != j);
-    if (i < j)
-      return Nred * (Nred - 1) / 2 - (Nred - i) * (Nred - i - 1) / 2 + j - i - 1;
-    else // i > j
-      return triangle_index(j, i);
-  }
-
   accelerator_inline int index(int i, int j) const {
     if (i == j)
       return i;
+    else if (i < j)
+      return Nred + Nred * (Nred - 1) / 2 - (Nred - i) * (Nred - i - 1) / 2 + j - i - 1;
     else
-      return Nred + triangle_index(i, j);
+      return Nred + Nred * (Nred - 1) / 2 - (Nred - j) * (Nred - j - 1) / 2 + i - j - 1;
   }
 
   /////////////////////////////////////////////
