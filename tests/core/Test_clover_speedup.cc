@@ -41,13 +41,9 @@ public:
   INHERIT_IMPL_TYPES(Impl);
   static_assert(Nd == 4 && Nc == 3 && Ns == 4 && Impl::Dimension == 3, "Wrong dimensions");
   template<typename vtype>
-  using iImplCloverDiagonal = iScalar<iVector<iVector<vtype, 6>, 2>>; // TODO: real numbers
-  template<typename vtype>
-  using iImplCloverTriangle = iScalar<iVector<iVector<vtype, 15>, 2>>;
-  typedef iImplCloverDiagonal<Simd> SiteCloverDiagonal;
-  typedef iImplCloverTriangle<Simd> SiteCloverTriangle;
-  typedef Lattice<SiteCloverDiagonal> CloverDiagonalField;
-  typedef Lattice<SiteCloverTriangle> CloverTriangleField;
+  using iImplCloverReduced = iScalar<iVector<iVector<vtype, 21>, 2>>; // TODO: real numbers on diagonal
+  typedef iImplCloverReduced<Simd> SiteCloverReduced;
+  typedef Lattice<SiteCloverReduced> CloverReducedField;
 
   /////////////////////////////////////////////
   // Member Functions
@@ -56,38 +52,34 @@ public:
 public:
 
   CloverTermFast(WilsonCloverFermion<Impl>& clover_full)
-    : diag(clover_full.GaugeGrid())
-    , triang(clover_full.GaugeGrid())
+    : clov(clover_full.GaugeGrid())
   {
     fill(clover_full.CloverTerm);
   }
 
   void Mooee(const FermionField& in, FermionField& out) {
     conformable(in.Grid(), out.Grid());
-    conformable(diag.Grid(), in.Grid());
+    conformable(clov.Grid(), in.Grid());
     out.Checkerboard() = in.Checkerboard();
 
-    autoView(diag_v, diag, AcceleratorRead);
-    autoView(triang_v, triang, AcceleratorRead);
+    autoView(clov_v, clov, AcceleratorRead);
     autoView(in_v, in, AcceleratorRead);
     autoView(out_v, out, AcceleratorWrite);
 
 #if defined VERSION_1
     // first version
     out = Zero();
-    accelerator_for(ss, diag.Grid()->oSites(), 1, {
+    accelerator_for(ss, clov.Grid()->oSites(), 1, {
       for(int block=0; block<Nhs; block++) {
         int s_start = block*Nhs;
         for(int i=0; i<Nred; i++) {
           for(int j=0; j<Nred; j++) {
             int si = s_start + i/Nc, ci = i%Nc;
             int sj = s_start + j/Nc, cj = j%Nc;
-            if(i == j) {
-              out_v[ss]()(si)(ci) += diag_v[ss]()(block)(i) * in_v[ss]()(sj)(cj);
-            } else if (i < j) {
-              out_v[ss]()(si)(ci) += triang_v[ss]()(block)(triangle_index(i, j)) * in_v[ss]()(sj)(cj);
+            if(i <= j) {
+              out_v[ss]()(si)(ci) += clov_v[ss]()(block)(index(i,j)) * in_v[ss]()(sj)(cj);
             } else {
-              out_v[ss]()(si)(ci) += conjugate(triang_v[ss]()(block)(triangle_index(i, j))) * in_v[ss]()(sj)(cj);
+              out_v[ss]()(si)(ci) += conjugate(clov_v[ss]()(block)(index(i, j))) * in_v[ss]()(sj)(cj);
             }
           }
         }
@@ -98,7 +90,7 @@ public:
 #if defined VERSION_2
     // second version
     typedef decltype(coalescedRead(out_v[0])) calcSpinor;
-    accelerator_for(ss, diag.Grid()->oSites(), 1, {
+    accelerator_for(ss, clov.Grid()->oSites(), 1, {
       calcSpinor res = Zero();
       for(int block=0; block<Nhs; block++) {
         int s_start = block*Nhs;
@@ -106,12 +98,10 @@ public:
           for(int j=0; j<Nred; j++) {
             int si = s_start + i/Nc, ci = i%Nc;
             int sj = s_start + j/Nc, cj = j%Nc;
-            if(i == j) {
-              res()(si)(ci) += diag_v[ss]()(block)(i) * in_v[ss]()(sj)(cj);
-            } else if (i < j) {
-              res()(si)(ci) += triang_v[ss]()(block)(triangle_index(i, j)) * in_v[ss]()(sj)(cj);
+            if(i <= j) {
+              res()(si)(ci) += clov_v[ss]()(block)(index(i,j)) * in_v[ss]()(sj)(cj);
             } else {
-              res()(si)(ci) += conjugate(triang_v[ss]()(block)(triangle_index(i, j))) * in_v[ss]()(sj)(cj);
+              res()(si)(ci) += conjugate(clov_v[ss]()(block)(index(i, j))) * in_v[ss]()(sj)(cj);
             }
           }
         }
@@ -123,23 +113,20 @@ public:
 #if defined VERSION_3
     // third version
     typedef decltype(coalescedRead(out_v[0])) calcSpinor;
-    accelerator_for(ss, diag.Grid()->oSites(), Simd::Nsimd(), {
+    accelerator_for(ss, clov.Grid()->oSites(), Simd::Nsimd(), {
       calcSpinor res = Zero();
       calcSpinor in_t = in_v(ss);
-      auto diag_t = diag_v(ss);
-      auto triang_t = triang_v(ss);
+      auto clov_t = clov_v(ss);
       for(int block=0; block<Nhs; block++) {
         int s_start = block*Nhs;
         for(int i=0; i<Nred; i++) {
           for(int j=0; j<Nred; j++) {
             int si = s_start + i/Nc, ci = i%Nc;
             int sj = s_start + j/Nc, cj = j%Nc;
-            if(i == j) {
-              res()(si)(ci) += diag_t()(block)(i) * in_t()(sj)(cj);
-            } else if (i < j) {
-              res()(si)(ci) += triang_t()(block)(triangle_index(i, j)) * in_t()(sj)(cj);
+            if (i <= j) {
+              res()(si)(ci) += clov_t()(block)(index(i, j)) * in_t()(sj)(cj);
             } else {
-              res()(si)(ci) += conjugate(triang_t()(block)(triangle_index(i, j))) * in_t()(sj)(cj);
+              res()(si)(ci) += conjugate(clov_t()(block)(index(i, j))) * in_t()(sj)(cj);
             }
           }
         }
@@ -157,8 +144,7 @@ private:
 
   void fill(const typename WilsonCloverFermion<Impl>::CloverFieldType& clover_full) {
     autoView(clover_full_v, clover_full, AcceleratorRead);
-    autoView(diag_v, diag, AcceleratorWrite);
-    autoView(triang_v, triang, AcceleratorWrite);
+    autoView(clov_v, clov, AcceleratorWrite);
 
     accelerator_for(ss, clover_full.Grid()->oSites(), 1, {
       for(int s_row=0; s_row<Ns; s_row++) {
@@ -173,10 +159,8 @@ private:
               int j = s_col_block * Nc + c_col;
               if(i > j)
                 continue;
-              else if(i < j)
-                triang_v[ss]()(block)(triangle_index(i, j)) = clover_full_v[ss]()(s_row, s_col)(c_row, c_col);
-              else // i == j
-                diag_v[ss]()(block)(i) = clover_full_v[ss]()(s_row, s_col)(c_row, c_col);
+              else
+                clov_v[ss]()(block)(index(i, j)) = clover_full_v[ss]()(s_row, s_col)(c_row, c_col);
             }
           }
         }
@@ -192,14 +176,20 @@ private:
       return triangle_index(j, i);
   }
 
+  accelerator_inline int index(int i, int j) const {
+    if (i == j)
+      return i;
+    else
+      return Nred + triangle_index(i, j);
+  }
+
   /////////////////////////////////////////////
   // Member Data
   /////////////////////////////////////////////
 
 private:
 
-  CloverDiagonalField diag;
-  CloverTriangleField triang;
+  CloverReducedField clov;
   static constexpr int Nred = Nc * Nhs;
 };
 
