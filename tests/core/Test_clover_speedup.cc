@@ -31,6 +31,49 @@
 using namespace Grid;
 
 template<class Impl>
+class CloverTermFast;
+
+
+accelerator_inline int index2(int i, int j) {
+  const int Nred = 6;
+  if (i == j)
+    return i;
+  else if (i < j)
+    return Nred + Nred * (Nred - 1) / 2 - (Nred - i) * (Nred - i - 1) / 2 + j - i - 1;
+  else
+    return Nred + Nred * (Nred - 1) / 2 - (Nred - j) * (Nred - j - 1) / 2 + i - j - 1;
+}
+
+
+template<class CloverFullField, class CloverReducedField>
+void convert_clover(const CloverFullField& clover_full, CloverReducedField& clover_red) {
+  autoView(clover_full_v, clover_full, AcceleratorRead);
+  autoView(clover_red_v, clover_red, AcceleratorWrite);
+
+  accelerator_for(ss, clover_full.Grid()->oSites(), 1, {
+    for(int s_row = 0; s_row < Ns; s_row++) {
+      for(int s_col = 0; s_col < Ns; s_col++) {
+        if(abs(s_row - s_col) > 1 || s_row + s_col == 3) continue;
+        int block       = s_row / Nhs;
+        int s_row_block = s_row % Nhs;
+        int s_col_block = s_col % Nhs;
+        for(int c_row = 0; c_row < Nc; c_row++) {
+          for(int c_col = 0; c_col < Nc; c_col++) {
+            int i = s_row_block * Nc + c_row;
+            int j = s_col_block * Nc + c_col;
+            if(i > j)
+              continue;
+            else
+              clover_red_v[ss]()(block)(index2(i, j)) = clover_full_v[ss]()(s_row, s_col)(c_row, c_col);
+          }
+        }
+      }
+    }
+  });
+}
+
+
+template<class Impl>
 class CloverTermFast {
   /////////////////////////////////////////////
   // Type definitions
@@ -54,7 +97,7 @@ public:
   CloverTermFast(WilsonCloverFermion<Impl>& clover_full)
     : clov(clover_full.GaugeGrid())
   {
-    fill(clover_full.CloverTerm);
+    convert_clover(clover_full.CloverTerm, clov);
   }
 
   void Mooee(const FermionField& in, FermionField& out) {
@@ -77,9 +120,9 @@ public:
             int si = s_start + i/Nc, ci = i%Nc;
             int sj = s_start + j/Nc, cj = j%Nc;
             if(i <= j) {
-              out_v[ss]()(si)(ci) += clov_v[ss]()(block)(index(i,j)) * in_v[ss]()(sj)(cj);
+              out_v[ss]()(si)(ci) = out_v[ss]()(si)(ci) + clov_v[ss]()(block)(index2(i,j)) * in_v[ss]()(sj)(cj);
             } else {
-              out_v[ss]()(si)(ci) += conjugate(clov_v[ss]()(block)(index(i, j))) * in_v[ss]()(sj)(cj);
+              out_v[ss]()(si)(ci) = out_v[ss]()(si)(ci) + conjugate(clov_v[ss]()(block)(index2(i, j))) * in_v[ss]()(sj)(cj);
             }
           }
         }
@@ -90,7 +133,7 @@ public:
 #if defined VERSION_2
     // second version
     typedef decltype(coalescedRead(out_v[0])) calcSpinor;
-    accelerator_for(ss, clov.Grid()->oSites(), 1, {
+    accelerator_for(ss, clov.Grid()->oSites(), Simd::Nsimd(), {
       calcSpinor res = Zero();
       for(int block=0; block<Nhs; block++) {
         int s_start = block*Nhs;
@@ -99,14 +142,14 @@ public:
             int si = s_start + i/Nc, ci = i%Nc;
             int sj = s_start + j/Nc, cj = j%Nc;
             if(i <= j) {
-              res()(si)(ci) += clov_v[ss]()(block)(index(i,j)) * in_v[ss]()(sj)(cj);
+              res()(si)(ci) = res()(si)(ci) + clov_v(ss)()(block)(index2(i,j)) * in_v(ss)()(sj)(cj);
             } else {
-              res()(si)(ci) += conjugate(clov_v[ss]()(block)(index(i, j))) * in_v[ss]()(sj)(cj);
+              res()(si)(ci) = res()(si)(ci) + conjugate(clov_v(ss)()(block)(index2(i, j))) * in_v(ss)()(sj)(cj);
             }
           }
         }
       }
-      out_v[ss] = res;
+      coalescedWrite(out_v[ss], res);
     });
 #endif
 
@@ -124,9 +167,9 @@ public:
             int si = s_start + i/Nc, ci = i%Nc;
             int sj = s_start + j/Nc, cj = j%Nc;
             if (i <= j) {
-              res()(si)(ci) += clov_t()(block)(index(i, j)) * in_t()(sj)(cj);
+              res()(si)(ci) = res()(si)(ci) + clov_t()(block)(index2(i, j)) * in_t()(sj)(cj);
             } else {
-              res()(si)(ci) += conjugate(clov_t()(block)(index(i, j))) * in_t()(sj)(cj);
+              res()(si)(ci) = res()(si)(ci) + conjugate(clov_t()(block)(index2(i, j))) * in_t()(sj)(cj);
             }
           }
         }
@@ -138,34 +181,6 @@ public:
     // NOTE:
     // - The trend seems to be that the larger the lattice is, the more version 2 and 3 outperform version 1
     // - Yet, I still don't reach the theoretical factor 3.4
-  }
-
-private:
-
-  void fill(const typename WilsonCloverFermion<Impl>::CloverFieldType& clover_full) {
-    autoView(clover_full_v, clover_full, AcceleratorRead);
-    autoView(clov_v, clov, AcceleratorWrite);
-
-    accelerator_for(ss, clover_full.Grid()->oSites(), 1, {
-      for(int s_row=0; s_row<Ns; s_row++) {
-        for(int s_col=0; s_col<Ns; s_col++) {
-          if(abs(s_row-s_col) > 1 || s_row+s_col == 3) continue;
-          int block = s_row / Nhs;
-          int s_row_block = s_row % Nhs;
-          int s_col_block = s_col % Nhs;
-          for(int c_row=0; c_row<Nc; c_row++) {
-            for(int c_col=0; c_col<Nc; c_col++) {
-              int i = s_row_block * Nc + c_row;
-              int j = s_col_block * Nc + c_col;
-              if(i > j)
-                continue;
-              else
-                clov_v[ss]()(block)(index(i, j)) = clover_full_v[ss]()(s_row, s_col)(c_row, c_col);
-            }
-          }
-        }
-      }
-    });
   }
 
   accelerator_inline int index(int i, int j) const {
@@ -236,8 +251,12 @@ int main(int argc, char** argv) {
   WilsonAnisotropyCoefficients anisParams;
 
   // setup fermion operators
+  double t_a = usecond();
   WilsonCloverFermionR Dwc(Umu, *UGrid, *UrbGrid, 0.5, 1.0, 1.0, anisParams, implParams);
+  double t_b = usecond();
   CloverTermFast<WilsonImplR> Dwc_fast(Dwc);
+  double t_c = usecond();
+  grid_printf("Clover term setup times: reference %f s, improved %f s\n", (t_b-t_a)/1e6, (t_c-t_b)/1e6);
 
   // misc stuff needed for benchmarks
   const int nIter = readFromCommandLineInt(&argc, &argv, "--niter", 1000);
