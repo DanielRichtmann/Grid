@@ -28,15 +28,25 @@
 
 #include <Grid/Grid.h>
 
+#ifdef GRID_CUDA
+// #define CUDA_PROFILE
+#endif
+
+#ifdef CUDA_PROFILE
+#include <cuda_profiler_api.h>
+#endif
+
 using namespace Grid;
 
 
 // index within the triangle portion
 accelerator_inline int index_triang(int i, int j) {
   const int Nred = 6;
-  if (i < j)
+  if (i == j)
+    return 0;
+  else if (i < j)
     return Nred * (Nred - 1) / 2 - (Nred - i) * (Nred - i - 1) / 2 + j - i - 1;
-  else if (i > j)
+  else // i > j
     return Nred * (Nred - 1) / 2 - (Nred - j) * (Nred - j - 1) / 2 + i - j - 1;
 }
 
@@ -162,6 +172,28 @@ public:
 // #endif
   }
 
+  template<typename vCoeff_t> accelerator_inline vCoeff_t
+  red_elem(const iImplCloverReduced<vCoeff_t>& red, int block, int i, int j) {
+    if (i <= j) {
+      return red()(block)(index_red(i, j));
+    } else {
+      return conjugate(red()(block)(index_red(i, j)));
+    }
+  }
+
+  template<typename vCoeff_t> accelerator_inline vCoeff_t
+  triang_elem(const iImplCloverTriangle<vCoeff_t>& triang, int block, int i, int j) {
+    assert(i != j);
+    if (i < j) {
+      return triang()(block)(index_triang(i, j));
+    } else { // i > j
+      return conjugate(triang()(block)(index_triang(i, j)));
+    }
+  }
+
+  // NOTE: This was an idea, might need somewhen, leaving here
+  #define unrolled_for( i, num, ... ) DO_PRAGMA(unroll) for ( uint64_t i=0;i<num;i++) { __VA_ARGS__ } ;
+
   void Mooee_original_nosplit_nostream(const FermionField& in, FermionField& out) {
     conformable(in.Grid(), out.Grid());
     conformable(clov_red.Grid(), in.Grid());
@@ -178,17 +210,15 @@ public:
       for(int block=0; block<Nhs; block++) {
         int s_start = block*Nhs;
         for(int i=0; i<Nred; i++) {
+          int si = s_start + i/Nc, ci = i%Nc;
+          res()(si)(ci) = clov_red_t()(block)(i) * in_t()(si)(ci);
           for(int j=0; j<Nred; j++) {
-            int si = s_start + i/Nc, ci = i%Nc;
+            if (j == i) continue;
             int sj = s_start + j/Nc, cj = j%Nc;
-            if (i <= j) {
-              res()(si)(ci) = res()(si)(ci) + clov_red_t()(block)(index_red(i, j)) * in_t()(sj)(cj);
-            } else {
-              res()(si)(ci) = res()(si)(ci) + conjugate(clov_red_t()(block)(index_red(i, j))) * in_t()(sj)(cj);
-            }
-          }
-        }
-      }
+            res()(si)(ci) = res()(si)(ci) + red_elem(clov_red_t, block, i, j) * in_t()(sj)(cj);
+          };
+        };
+      };
       coalescedWrite(out_v[ss], res);
     });
   }
@@ -212,19 +242,15 @@ public:
       for(int block=0; block<Nhs; block++) {
         int s_start = block*Nhs;
         for(int i=0; i<Nred; i++) {
+          int si = s_start + i/Nc, ci = i%Nc;
+          res()(si)(ci) = clov_diag_t()(block)(i) * in_t()(si)(ci);
           for(int j=0; j<Nred; j++) {
-            int si = s_start + i/Nc, ci = i%Nc;
+            if (j == i) continue;
             int sj = s_start + j/Nc, cj = j%Nc;
-            if (i == j) {
-              res()(si)(ci) = res()(si)(ci) + clov_diag_t()(block)(i) * in_t()(sj)(cj);
-            } else if (i < j) {
-              res()(si)(ci) = res()(si)(ci) + clov_triang_t()(block)(index_triang(i, j)) * in_t()(sj)(cj);
-            } else { // i > j
-              res()(si)(ci) = res()(si)(ci) + conjugate(clov_triang_t()(block)(index_triang(i, j))) * in_t()(sj)(cj);
-            }
-          }
-        }
-      }
+            res()(si)(ci) = res()(si)(ci)+ triang_elem(clov_triang_t, block, i, j) * in_t()(sj)(cj);
+          };
+        };
+      };
       coalescedWrite(out_v[ss], res);
     });
   }
@@ -454,14 +480,12 @@ public:
       for(int block=0; block<Nhs; block++) {
         int s_start = block*Nhs;
         for(int i=0; i<Nred; i++) {
+          int si = s_start + i/Nc, ci = i%Nc;
+          res()(si)(ci) = clov_red_t()(block)(i) * in_t()(si)(ci);
           for(int j=0; j<Nred; j++) {
-            int si = s_start + i/Nc, ci = i%Nc;
+            if (j == i) continue;
             int sj = s_start + j/Nc, cj = j%Nc;
-            if (i <= j) {
-              res()(si)(ci) = res()(si)(ci) + clov_red_t()(block)(index_red(i, j)) * in_t()(sj)(cj);
-            } else {
-              res()(si)(ci) = res()(si)(ci) + conjugate(clov_red_t()(block)(index_red(i, j))) * in_t()(sj)(cj);
-            }
+            res()(si)(ci) = res()(si)(ci) + red_elem(clov_red_t, block, i, j) * in_t()(sj)(cj);
           }
         }
       }
@@ -488,16 +512,12 @@ public:
       for(int block=0; block<Nhs; block++) {
         int s_start = block*Nhs;
         for(int i=0; i<Nred; i++) {
+          int si = s_start + i/Nc, ci = i%Nc;
+          res()(si)(ci) = clov_diag_t()(block)(i) * in_t()(si)(ci);
           for(int j=0; j<Nred; j++) {
-            int si = s_start + i/Nc, ci = i%Nc;
+            if (j == i) continue;
             int sj = s_start + j/Nc, cj = j%Nc;
-            if (i == j) {
-              res()(si)(ci) = res()(si)(ci) + clov_diag_t()(block)(i) * in_t()(sj)(cj);
-            } else if (i < j) {
-              res()(si)(ci) = res()(si)(ci) + clov_triang_t()(block)(index_triang(i, j)) * in_t()(sj)(cj);
-            } else { // i > j
-              res()(si)(ci) = res()(si)(ci) + conjugate(clov_triang_t()(block)(index_triang(i, j))) * in_t()(sj)(cj);
-            }
+            res()(si)(ci) = res()(si)(ci)+ triang_elem(clov_triang_t, block, i, j) * in_t()(sj)(cj);
           }
         }
       }
@@ -807,7 +827,15 @@ int main(int argc, char** argv) {
   for(auto n : {1, 2, 3, 4, 5}) Dwc.Dhop(src, hop, 0);
   grid_printf("hop measurement\n"); fflush(stdout);
   double t0 = usecond();
-  for(int n = 0; n < nIter; n++) Dwc.Dhop(src, hop, 0);
+  for(int n = 0; n < nIter; n++) {
+#ifdef CUDA_PROFILE
+    if(n == 10) cudaProfilerStart();
+#endif
+    Dwc.Dhop(src, hop, 0);
+#ifdef CUDA_PROFILE
+    if(n == 20) cudaProfilerStop();
+#endif
+  }
   double t1 = usecond();
   double secs_hop = (t1-t0)/1e6;
 
@@ -833,7 +861,23 @@ int main(int argc, char** argv) {
   double secs_res = (t1-t0)/1e6;
   # endif
 
-#if defined(GRID_CUDA)||defined(GRID_HIP)
+#if (defined(GRID_CUDA)||defined(GRID_HIP))&&defined(CUDA_PROFILE)
+#define BENCH_CLOVER_VERSION(VERSION)\
+  double secs_##VERSION;\
+  {\
+    grid_printf("warmup %s\n", #VERSION); fflush(stdout);\
+    for(auto n : {1, 2, 3, 4, 5}) Dwc_fast.Mooee_##VERSION(src, res);\
+    grid_printf("measurement %s\n", #VERSION); fflush(stdout);\
+    double t0 = usecond();\
+    for(int n = 0; n < nIter; n++) {\
+      if(n == 10) cudaProfilerStart();\
+      Dwc_fast.Mooee_##VERSION(src, res);\
+      if(n == 20) cudaProfilerStop();\
+    }\
+    double t1 = usecond();\
+    secs_##VERSION = (t1-t0)/1e6;\
+  }
+#elif (defined(GRID_CUDA)||defined(GRID_HIP))&&!defined(CUDA_PROFILE)
 #define BENCH_CLOVER_VERSION(VERSION)\
   double secs_##VERSION;\
   {\
