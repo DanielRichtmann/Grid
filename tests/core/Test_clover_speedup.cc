@@ -229,38 +229,6 @@ public:
     });
   }
 
-  void Mooee_original_nosplit_indextable_nostream(const FermionField& in, FermionField& out) {
-    conformable(in.Grid(), out.Grid());
-    conformable(clov_red.Grid(), in.Grid());
-    out.Checkerboard() = in.Checkerboard();
-    autoView(clov_red_v, clov_red, AcceleratorRead);
-    autoView(in_v, in, AcceleratorRead);
-    autoView(out_v, out, AcceleratorWrite);
-    constexpr int N = Nred*Nred;
-    const int* idx_tab = &index_table[0];
-    typedef decltype(coalescedRead(out_v[0])) calcSpinor;
-    const uint64_t Nsite = clov_red.Grid()->oSites();
-    accelerator_for(ss, Nsite, Simd::Nsimd(), {
-      calcSpinor res = Zero();
-      calcSpinor in_t = in_v(ss);
-      auto clov_red_t = clov_red_v(ss);
-      for(int block=0; block<Nhs; block++) {
-        int s_start = block*Nhs;
-        for(int idx=0; idx<N; idx++) {
-          int i = idx/Nred; int j = idx%Nred;
-          int si = s_start + i/Nc, ci = i%Nc;
-          int sj = s_start + j/Nc, cj = j%Nc;
-          if (i <= j) {
-            res()(si)(ci) = res()(si)(ci) + clov_red_t()(block)(idx_tab[idx]) * in_t()(sj)(cj);
-          } else {
-            res()(si)(ci) = res()(si)(ci) + conjugate(clov_red_t()(block)(idx_tab[idx])) * in_t()(sj)(cj);
-          }
-        }
-      }
-      coalescedWrite(out_v[ss], res);
-    });
-  }
-
   void Mooee_handunrolled_nosplit_nostream(const FermionField& in, FermionField& out) {
     conformable(in.Grid(), out.Grid());
     conformable(clov_red.Grid(), in.Grid());
@@ -537,38 +505,6 @@ public:
     });
   }
 
-  void Mooee_original_nosplit_indextable_withstream(const FermionField& in, FermionField& out) {
-    conformable(in.Grid(), out.Grid());
-    conformable(clov_red.Grid(), in.Grid());
-    out.Checkerboard() = in.Checkerboard();
-    autoView(clov_red_v, clov_red, AcceleratorRead);
-    autoView(in_v, in, AcceleratorRead);
-    autoView(out_v, out, AcceleratorWrite);
-    constexpr int N = Nred*Nred;
-    const int* idx_tab = &index_table[0];
-    typedef decltype(coalescedRead(out_v[0])) calcSpinor;
-    const uint64_t Nsite = clov_red.Grid()->oSites();
-    accelerator_for(ss, Nsite, Simd::Nsimd(), {
-      calcSpinor res = Zero();
-      calcSpinor in_t = in_v(ss);
-      auto clov_red_t = clov_red_v(ss);
-      for(int block=0; block<Nhs; block++) {
-        int s_start = block*Nhs;
-        for(int idx=0; idx<N; idx++) {
-          int i = idx/Nred; int j = idx%Nred;
-          int si = s_start + i/Nc, ci = i%Nc;
-          int sj = s_start + j/Nc, cj = j%Nc;
-          if (i <= j) {
-            res()(si)(ci) = res()(si)(ci) + clov_red_t()(block)(idx_tab[idx]) * in_t()(sj)(cj);
-          } else {
-            res()(si)(ci) = res()(si)(ci) + conjugate(clov_red_t()(block)(idx_tab[idx])) * in_t()(sj)(cj);
-          }
-        }
-      }
-      coalescedWriteNonTemporal(out_v[ss], res);
-    });
-  }
-
   void Mooee_handunrolled_nosplit_withstream(const FermionField& in, FermionField& out) {
     conformable(in.Grid(), out.Grid());
     conformable(clov_red.Grid(), in.Grid());
@@ -788,11 +724,6 @@ private:
   CloverTriangleField clov_triang;
   CloverReducedField clov_red;
   static constexpr int Nred = Nc * Nhs;
-public:
-  const Vector<int> index_table = {
-    0,  6,  7, 8,  9, 10, 6,  1, 11, 12, 13, 14,  7, 11,  2, 15, 16, 17,
-    8, 12, 15, 3, 18, 19, 9, 13, 16, 18,  4, 20, 10, 14, 17, 19, 20,  5
-  };
 };
 
 
@@ -933,23 +864,12 @@ int main(int argc, char** argv) {
   BENCH_CLOVER_VERSION(original_nosplit_withstream);
   BENCH_CLOVER_VERSION(original_withsplit_nostream);
   BENCH_CLOVER_VERSION(original_withsplit_withstream);
-  BENCH_CLOVER_VERSION(original_nosplit_indextable_nostream);
-  BENCH_CLOVER_VERSION(original_nosplit_indextable_withstream);
   BENCH_CLOVER_VERSION(handunrolled_nosplit_nostream);
   BENCH_CLOVER_VERSION(handunrolled_nosplit_withstream);
   BENCH_CLOVER_VERSION(handunrolled_withsplit_nostream);
   BENCH_CLOVER_VERSION(handunrolled_withsplit_withstream);
 
 #undef BENCH_CLOVER_VERSION
-
-  # if 0
-  grid_printf("indices\n");
-  fflush(stdout);
-  for(int i = 0; i < 6; i++)
-    for(int j = 0; j < 6; j++)
-      grid_printf(
-        "i = %d, j = %d, idx = %d, tab = %d\n", i, j, index_red(i, j), Dwc_fast.index_table[i * 6 + j]);
-  # endif
 
   // performance per site (use minimal values necessary)
   double hop_flop_per_site = 1320; // Rich's Talk + what Peter uses
@@ -979,8 +899,6 @@ int main(int argc, char** argv) {
   PRINT_CLOVER_VERSION(original_nosplit_withstream);
   PRINT_CLOVER_VERSION(original_withsplit_nostream);
   PRINT_CLOVER_VERSION(original_withsplit_withstream);
-  PRINT_CLOVER_VERSION(original_nosplit_indextable_nostream);
-  PRINT_CLOVER_VERSION(original_nosplit_indextable_withstream);
   PRINT_CLOVER_VERSION(handunrolled_nosplit_nostream);
   PRINT_CLOVER_VERSION(handunrolled_nosplit_withstream);
   PRINT_CLOVER_VERSION(handunrolled_withsplit_nostream);
