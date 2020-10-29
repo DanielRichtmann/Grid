@@ -30,11 +30,19 @@
 
 using namespace Grid;
 
-template<class Impl>
-class CloverTermFast;
+
+// index within the triangle portion
+accelerator_inline int index_triang(int i, int j) {
+  const int Nred = 6;
+  if (i < j)
+    return Nred * (Nred - 1) / 2 - (Nred - i) * (Nred - i - 1) / 2 + j - i - 1;
+  else if (i > j)
+    return Nred * (Nred - 1) / 2 - (Nred - j) * (Nred - j - 1) / 2 + i - j - 1;
+}
 
 
-accelerator_inline int index2(int i, int j) {
+// index within reduced (= diagonal + triangle portion)
+accelerator_inline int index_red(int i, int j) {
   const int Nred = 6;
   if (i == j)
     return i;
@@ -64,7 +72,37 @@ void convert_clover(const CloverFullField& clover_full, CloverReducedField& clov
             if(i > j)
               continue;
             else
-              clover_red_v[ss]()(block)(index2(i, j)) = clover_full_v[ss]()(s_row, s_col)(c_row, c_col);
+              clover_red_v[ss]()(block)(index_red(i, j)) = clover_full_v[ss]()(s_row, s_col)(c_row, c_col);
+          }
+        }
+      }
+    }
+  });
+}
+
+template<class CloverFullField, class CloverDiagonalField, class CloverTriangleField>
+void convert_clover(const CloverFullField& clover_full, CloverDiagonalField& clover_diag, CloverTriangleField& clover_triang) {
+  autoView(clover_full_v, clover_full, AcceleratorRead);
+  autoView(clover_diag_v, clover_diag, AcceleratorWrite);
+  autoView(clover_triang_v, clover_triang, AcceleratorWrite);
+
+  accelerator_for(ss, clover_full.Grid()->oSites(), 1, {
+    for(int s_row = 0; s_row < Ns; s_row++) {
+      for(int s_col = 0; s_col < Ns; s_col++) {
+        if(abs(s_row - s_col) > 1 || s_row + s_col == 3) continue;
+        int block       = s_row / Nhs;
+        int s_row_block = s_row % Nhs;
+        int s_col_block = s_col % Nhs;
+        for(int c_row = 0; c_row < Nc; c_row++) {
+          for(int c_col = 0; c_col < Nc; c_col++) {
+            int i = s_row_block * Nc + c_row;
+            int j = s_col_block * Nc + c_col;
+            if(i == j)
+              clover_diag_v[ss]()(block)(i) = clover_full_v[ss]()(s_row, s_col)(c_row, c_col);
+            else if(i < j)
+              clover_triang_v[ss]()(block)(index_triang(i, j)) = clover_full_v[ss]()(s_row, s_col)(c_row, c_col);
+            else
+              continue;
           }
         }
       }
@@ -81,11 +119,23 @@ class CloverTermFast {
 
 public:
 
-  INHERIT_IMPL_TYPES(Impl);
   static_assert(Nd == 4 && Nc == 3 && Ns == 4 && Impl::Dimension == 3, "Wrong dimensions");
+  INHERIT_IMPL_TYPES(Impl);
+
+  // need to use different types on CPU and GPU :/
   template<typename vtype>
-  using iImplCloverReduced = iScalar<iVector<iVector<vtype, 21>, 2>>; // TODO: real numbers on diagonal
-  typedef iImplCloverReduced<Simd> SiteCloverReduced;
+  using iImplCloverDiagonal = iScalar<iVector<iVector<vtype, 6>, 2>>; // TODO: real numbers
+  template<typename vtype>
+  using iImplCloverTriangle = iScalar<iVector<iVector<vtype, 15>, 2>>;
+  template<typename vtype>
+  using iImplCloverReduced = iScalar<iVector<iVector<vtype, 21>, 2>>;
+
+  typedef iImplCloverDiagonal<Simd> SiteCloverDiagonal;
+  typedef iImplCloverTriangle<Simd> SiteCloverTriangle;
+  typedef iImplCloverReduced<Simd>  SiteCloverReduced;
+
+  typedef Lattice<SiteCloverDiagonal> CloverDiagonalField;
+  typedef Lattice<SiteCloverTriangle> CloverTriangleField;
   typedef Lattice<SiteCloverReduced> CloverReducedField;
 
   /////////////////////////////////////////////
@@ -94,27 +144,37 @@ public:
 
 public:
 
-  CloverTermFast(WilsonCloverFermion<Impl>& clover_full)
-    : clov(clover_full.GaugeGrid())
+  CloverTermFast(WilsonCloverFermion<Impl>& clover_full) // initialize both for now, need to #ifdef in the final product
+    : clov_red(clover_full.GaugeGrid())
+    , clov_diag(clover_full.GaugeGrid())
+    , clov_triang(clover_full.GaugeGrid())
   {
-    convert_clover(clover_full.CloverTerm, clov);
+    convert_clover(clover_full.CloverTerm, clov_red);
+    convert_clover(clover_full.CloverTerm, clov_diag, clov_triang);
   }
 
   void Mooee(const FermionField& in, FermionField& out) {
-    conformable(in.Grid(), out.Grid());
-    conformable(clov.Grid(), in.Grid());
-    out.Checkerboard() = in.Checkerboard();
+    // TODO: select final implementations
+// #if defined(GRID_CUDA)||defined(GRID_HIP)
+//     Mooee_gpu(in, out);
+// #else
+//     Mooee_cpu(in, out);
+// #endif
+  }
 
-    autoView(clov_v, clov, AcceleratorRead);
+  void Mooee_original_nosplit_nostream(const FermionField& in, FermionField& out) {
+    conformable(in.Grid(), out.Grid());
+    conformable(clov_red.Grid(), in.Grid());
+    out.Checkerboard() = in.Checkerboard();
+    autoView(clov_red_v, clov_red, AcceleratorRead);
     autoView(in_v, in, AcceleratorRead);
     autoView(out_v, out, AcceleratorWrite);
-
-    // third version
     typedef decltype(coalescedRead(out_v[0])) calcSpinor;
-    accelerator_for(ss, clov.Grid()->oSites(), Simd::Nsimd(), {
+    const uint64_t Nsite = clov_red.Grid()->oSites();
+    accelerator_for(ss, Nsite, Simd::Nsimd(), {
       calcSpinor res = Zero();
       calcSpinor in_t = in_v(ss);
-      auto clov_t = clov_v(ss);
+      auto clov_red_t = clov_red_v(ss);
       for(int block=0; block<Nhs; block++) {
         int s_start = block*Nhs;
         for(int i=0; i<Nred; i++) {
@@ -122,28 +182,600 @@ public:
             int si = s_start + i/Nc, ci = i%Nc;
             int sj = s_start + j/Nc, cj = j%Nc;
             if (i <= j) {
-              res()(si)(ci) = res()(si)(ci) + clov_t()(block)(index2(i, j)) * in_t()(sj)(cj);
+              res()(si)(ci) = res()(si)(ci) + clov_red_t()(block)(index_red(i, j)) * in_t()(sj)(cj);
             } else {
-              res()(si)(ci) = res()(si)(ci) + conjugate(clov_t()(block)(index2(i, j))) * in_t()(sj)(cj);
+              res()(si)(ci) = res()(si)(ci) + conjugate(clov_red_t()(block)(index_red(i, j))) * in_t()(sj)(cj);
             }
           }
         }
       }
       coalescedWrite(out_v[ss], res);
     });
-
-    // NOTE:
-    // - The trend seems to be that the larger the lattice is, the more version 2 and 3 outperform version 1
-    // - Yet, I still don't reach the theoretical factor 3.4
   }
 
-  accelerator_inline int index(int i, int j) const {
-    if (i == j)
-      return i;
-    else if (i < j)
-      return Nred + Nred * (Nred - 1) / 2 - (Nred - i) * (Nred - i - 1) / 2 + j - i - 1;
-    else
-      return Nred + Nred * (Nred - 1) / 2 - (Nred - j) * (Nred - j - 1) / 2 + i - j - 1;
+  void Mooee_original_withsplit_nostream(const FermionField& in, FermionField& out) {
+    conformable(in.Grid(), out.Grid());
+    conformable(clov_diag.Grid(), in.Grid());
+    conformable(clov_diag.Grid(), clov_triang.Grid());
+    out.Checkerboard() = in.Checkerboard();
+    autoView(clov_diag_v, clov_diag, AcceleratorRead);
+    autoView(clov_triang_v, clov_triang, AcceleratorRead);
+    autoView(in_v, in, AcceleratorRead);
+    autoView(out_v, out, AcceleratorWrite);
+    typedef decltype(coalescedRead(out_v[0])) calcSpinor;
+    const uint64_t Nsite = clov_diag.Grid()->oSites();
+    accelerator_for(ss, Nsite, Simd::Nsimd(), {
+      calcSpinor res = Zero();
+      calcSpinor in_t = in_v(ss);
+      auto clov_diag_t = clov_diag_v(ss);
+      auto clov_triang_t = clov_triang_v(ss);
+      for(int block=0; block<Nhs; block++) {
+        int s_start = block*Nhs;
+        for(int i=0; i<Nred; i++) {
+          for(int j=0; j<Nred; j++) {
+            int si = s_start + i/Nc, ci = i%Nc;
+            int sj = s_start + j/Nc, cj = j%Nc;
+            if (i == j) {
+              res()(si)(ci) = res()(si)(ci) + clov_diag_t()(block)(i) * in_t()(sj)(cj);
+            } else if (i < j) {
+              res()(si)(ci) = res()(si)(ci) + clov_triang_t()(block)(index_triang(i, j)) * in_t()(sj)(cj);
+            } else { // i > j
+              res()(si)(ci) = res()(si)(ci) + conjugate(clov_triang_t()(block)(index_triang(i, j))) * in_t()(sj)(cj);
+            }
+          }
+        }
+      }
+      coalescedWrite(out_v[ss], res);
+    });
+  }
+
+  void Mooee_original_nosplit_indextable_nostream(const FermionField& in, FermionField& out) {
+    conformable(in.Grid(), out.Grid());
+    conformable(clov_red.Grid(), in.Grid());
+    out.Checkerboard() = in.Checkerboard();
+    autoView(clov_red_v, clov_red, AcceleratorRead);
+    autoView(in_v, in, AcceleratorRead);
+    autoView(out_v, out, AcceleratorWrite);
+    constexpr int N = Nred*Nred;
+    const int* idx_tab = &index_table[0];
+    typedef decltype(coalescedRead(out_v[0])) calcSpinor;
+    const uint64_t Nsite = clov_red.Grid()->oSites();
+    accelerator_for(ss, Nsite, Simd::Nsimd(), {
+      calcSpinor res = Zero();
+      calcSpinor in_t = in_v(ss);
+      auto clov_red_t = clov_red_v(ss);
+      for(int block=0; block<Nhs; block++) {
+        int s_start = block*Nhs;
+        for(int idx=0; idx<N; idx++) {
+          int i = idx/Nred; int j = idx%Nred;
+          int si = s_start + i/Nc, ci = i%Nc;
+          int sj = s_start + j/Nc, cj = j%Nc;
+          if (i <= j) {
+            res()(si)(ci) = res()(si)(ci) + clov_red_t()(block)(idx_tab[idx]) * in_t()(sj)(cj);
+          } else {
+            res()(si)(ci) = res()(si)(ci) + conjugate(clov_red_t()(block)(idx_tab[idx])) * in_t()(sj)(cj);
+          }
+        }
+      }
+      coalescedWrite(out_v[ss], res);
+    });
+  }
+
+  void Mooee_handunrolled_nosplit_nostream(const FermionField& in, FermionField& out) {
+    conformable(in.Grid(), out.Grid());
+    conformable(clov_red.Grid(), in.Grid());
+    out.Checkerboard() = in.Checkerboard();
+    autoView(clov_red_v, clov_red, AcceleratorRead);
+    autoView(in_v, in, AcceleratorRead);
+    autoView(out_v, out, AcceleratorWrite);
+    typedef decltype(coalescedRead(out_v[0])) calcSpinor;
+    const uint64_t Nsite = clov_red.Grid()->oSites();
+    accelerator_for(ss, Nsite, Simd::Nsimd(), {
+      calcSpinor res;
+      calcSpinor in_t = in_v(ss);
+      auto clov_red_t = clov_red_v(ss);
+
+      // upper half
+      res()(0)(0) =           clov_red_t()(0)( 0)  * in_t()(0)(0)
+                  +           clov_red_t()(0)( 6)  * in_t()(0)(1)
+                  +           clov_red_t()(0)( 7)  * in_t()(0)(2)
+                  +           clov_red_t()(0)( 8)  * in_t()(1)(0)
+                  +           clov_red_t()(0)( 9)  * in_t()(1)(1)
+                  +           clov_red_t()(0)(10)  * in_t()(1)(2);
+
+      res()(0)(1) = conjugate(clov_red_t()(0)( 6)) * in_t()(0)(0)
+                  +           clov_red_t()(0)( 1)  * in_t()(0)(1)
+                  +           clov_red_t()(0)(11)  * in_t()(0)(2)
+                  +           clov_red_t()(0)(12)  * in_t()(1)(0)
+                  +           clov_red_t()(0)(13)  * in_t()(1)(1)
+                  +           clov_red_t()(0)(14)  * in_t()(1)(2);
+
+      res()(0)(2) = conjugate(clov_red_t()(0)( 7)) * in_t()(0)(0)
+                  + conjugate(clov_red_t()(0)(11)) * in_t()(0)(1)
+                  +           clov_red_t()(0)( 2)  * in_t()(0)(2)
+                  +           clov_red_t()(0)(15)  * in_t()(1)(0)
+                  +           clov_red_t()(0)(16)  * in_t()(1)(1)
+                  +           clov_red_t()(0)(17)  * in_t()(1)(2);
+
+      res()(1)(0) = conjugate(clov_red_t()(0)( 8)) * in_t()(0)(0)
+                  + conjugate(clov_red_t()(0)(12)) * in_t()(0)(1)
+                  + conjugate(clov_red_t()(0)(15)) * in_t()(0)(2)
+                  +           clov_red_t()(0)( 3)  * in_t()(1)(0)
+                  +           clov_red_t()(0)(18)  * in_t()(1)(1)
+                  +           clov_red_t()(0)(19)  * in_t()(1)(2);
+
+      res()(1)(1) = conjugate(clov_red_t()(0)( 9)) * in_t()(0)(0)
+                  + conjugate(clov_red_t()(0)(13)) * in_t()(0)(1)
+                  + conjugate(clov_red_t()(0)(16)) * in_t()(0)(2)
+                  + conjugate(clov_red_t()(0)(18)) * in_t()(1)(0)
+                  +           clov_red_t()(0)( 4)  * in_t()(1)(1)
+                  +           clov_red_t()(0)(20)  * in_t()(1)(2);
+
+      res()(1)(2) = conjugate(clov_red_t()(0)(10)) * in_t()(0)(0)
+                  + conjugate(clov_red_t()(0)(14)) * in_t()(0)(1)
+                  + conjugate(clov_red_t()(0)(17)) * in_t()(0)(2)
+                  + conjugate(clov_red_t()(0)(19)) * in_t()(1)(0)
+                  + conjugate(clov_red_t()(0)(20)) * in_t()(1)(1)
+                  +           clov_red_t()(0)( 5)  * in_t()(1)(2);
+
+      // lower half
+      res()(2)(0) =           clov_red_t()(1)( 0)  * in_t()(2)(0)
+                  +           clov_red_t()(1)( 6)  * in_t()(2)(1)
+                  +           clov_red_t()(1)( 7)  * in_t()(2)(2)
+                  +           clov_red_t()(1)( 8)  * in_t()(3)(0)
+                  +           clov_red_t()(1)( 9)  * in_t()(3)(1)
+                  +           clov_red_t()(1)(10)  * in_t()(3)(2);
+
+      res()(2)(1) = conjugate(clov_red_t()(1)( 6)) * in_t()(2)(0)
+                  +           clov_red_t()(1)( 1)  * in_t()(2)(1)
+                  +           clov_red_t()(1)(11)  * in_t()(2)(2)
+                  +           clov_red_t()(1)(12)  * in_t()(3)(0)
+                  +           clov_red_t()(1)(13)  * in_t()(3)(1)
+                  +           clov_red_t()(1)(14)  * in_t()(3)(2);
+
+      res()(2)(2) = conjugate(clov_red_t()(1)( 7)) * in_t()(2)(0)
+                  + conjugate(clov_red_t()(1)(11)) * in_t()(2)(1)
+                  +           clov_red_t()(1)( 2)  * in_t()(2)(2)
+                  +           clov_red_t()(1)(15)  * in_t()(3)(0)
+                  +           clov_red_t()(1)(16)  * in_t()(3)(1)
+                  +           clov_red_t()(1)(17)  * in_t()(3)(2);
+
+      res()(3)(0) = conjugate(clov_red_t()(1)( 8)) * in_t()(2)(0)
+                  + conjugate(clov_red_t()(1)(12)) * in_t()(2)(1)
+                  + conjugate(clov_red_t()(1)(15)) * in_t()(2)(2)
+                  +           clov_red_t()(1)( 3)  * in_t()(3)(0)
+                  +           clov_red_t()(1)(18)  * in_t()(3)(1)
+                  +           clov_red_t()(1)(19)  * in_t()(3)(2);
+
+      res()(3)(1) = conjugate(clov_red_t()(1)( 9)) * in_t()(2)(0)
+                  + conjugate(clov_red_t()(1)(13)) * in_t()(2)(1)
+                  + conjugate(clov_red_t()(1)(16)) * in_t()(2)(2)
+                  + conjugate(clov_red_t()(1)(18)) * in_t()(3)(0)
+                  +           clov_red_t()(1)( 4)  * in_t()(3)(1)
+                  +           clov_red_t()(1)(20)  * in_t()(3)(2);
+
+      res()(3)(2) = conjugate(clov_red_t()(1)(10)) * in_t()(2)(0)
+                  + conjugate(clov_red_t()(1)(14)) * in_t()(2)(1)
+                  + conjugate(clov_red_t()(1)(17)) * in_t()(2)(2)
+                  + conjugate(clov_red_t()(1)(19)) * in_t()(3)(0)
+                  + conjugate(clov_red_t()(1)(20)) * in_t()(3)(1)
+                  +           clov_red_t()(1)( 5)  * in_t()(3)(2);
+      coalescedWrite(out_v[ss], res);
+    });
+  }
+
+  void Mooee_handunrolled_withsplit_nostream(const FermionField& in, FermionField& out) {
+    conformable(in.Grid(), out.Grid());
+    conformable(clov_diag.Grid(), in.Grid());
+    conformable(clov_diag.Grid(), clov_triang.Grid());
+    out.Checkerboard() = in.Checkerboard();
+    autoView(clov_diag_v, clov_diag, AcceleratorRead);
+    autoView(clov_triang_v, clov_triang, AcceleratorRead);
+    autoView(in_v, in, AcceleratorRead);
+    autoView(out_v, out, AcceleratorWrite);
+    typedef decltype(coalescedRead(out_v[0])) calcSpinor;
+    const uint64_t Nsite = clov_diag.Grid()->oSites();
+    accelerator_for(ss, Nsite, Simd::Nsimd(), {
+      calcSpinor res;
+      calcSpinor in_t = in_v(ss);
+      auto clov_diag_t = clov_diag_v(ss);
+      auto clov_triang_t = clov_triang_v(ss);
+
+      // upper half
+      res()(0)(0) =             clov_diag_t()(0)( 0)  * in_t()(0)(0)
+                  +           clov_triang_t()(0)( 0)  * in_t()(0)(1)
+                  +           clov_triang_t()(0)( 1)  * in_t()(0)(2)
+                  +           clov_triang_t()(0)( 2)  * in_t()(1)(0)
+                  +           clov_triang_t()(0)( 3)  * in_t()(1)(1)
+                  +           clov_triang_t()(0)( 4)  * in_t()(1)(2);
+
+      res()(0)(1) = conjugate(clov_triang_t()(0)( 0)) * in_t()(0)(0)
+                  +             clov_diag_t()(0)( 1)  * in_t()(0)(1)
+                  +           clov_triang_t()(0)( 5)  * in_t()(0)(2)
+                  +           clov_triang_t()(0)( 6)  * in_t()(1)(0)
+                  +           clov_triang_t()(0)( 7)  * in_t()(1)(1)
+                  +           clov_triang_t()(0)( 8)  * in_t()(1)(2);
+
+      res()(0)(2) = conjugate(clov_triang_t()(0)( 1)) * in_t()(0)(0)
+                  + conjugate(clov_triang_t()(0)( 5)) * in_t()(0)(1)
+                  +             clov_diag_t()(0)( 2)  * in_t()(0)(2)
+                  +           clov_triang_t()(0)( 9)  * in_t()(1)(0)
+                  +           clov_triang_t()(0)(10)  * in_t()(1)(1)
+                  +           clov_triang_t()(0)(11)  * in_t()(1)(2);
+
+      res()(1)(0) = conjugate(clov_triang_t()(0)( 2)) * in_t()(0)(0)
+                  + conjugate(clov_triang_t()(0)( 6)) * in_t()(0)(1)
+                  + conjugate(clov_triang_t()(0)( 9)) * in_t()(0)(2)
+                  +             clov_diag_t()(0)( 3)  * in_t()(1)(0)
+                  +           clov_triang_t()(0)(12)  * in_t()(1)(1)
+                  +           clov_triang_t()(0)(13)  * in_t()(1)(2);
+
+      res()(1)(1) = conjugate(clov_triang_t()(0)( 3)) * in_t()(0)(0)
+                  + conjugate(clov_triang_t()(0)( 7)) * in_t()(0)(1)
+                  + conjugate(clov_triang_t()(0)(10)) * in_t()(0)(2)
+                  + conjugate(clov_triang_t()(0)(12)) * in_t()(1)(0)
+                  +             clov_diag_t()(0)( 4)  * in_t()(1)(1)
+                  +           clov_triang_t()(0)(14)  * in_t()(1)(2);
+
+      res()(1)(2) = conjugate(clov_triang_t()(0)( 4)) * in_t()(0)(0)
+                  + conjugate(clov_triang_t()(0)( 8)) * in_t()(0)(1)
+                  + conjugate(clov_triang_t()(0)(11)) * in_t()(0)(2)
+                  + conjugate(clov_triang_t()(0)(13)) * in_t()(1)(0)
+                  + conjugate(clov_triang_t()(0)(14)) * in_t()(1)(1)
+                  +             clov_diag_t()(0)( 5)  * in_t()(1)(2);
+
+      // lower half
+      res()(2)(0) =             clov_diag_t()(1)( 0)  * in_t()(2)(0)
+                  +           clov_triang_t()(1)( 0)  * in_t()(2)(1)
+                  +           clov_triang_t()(1)( 1)  * in_t()(2)(2)
+                  +           clov_triang_t()(1)( 2)  * in_t()(3)(0)
+                  +           clov_triang_t()(1)( 3)  * in_t()(3)(1)
+                  +           clov_triang_t()(1)( 4)  * in_t()(3)(2);
+
+      res()(2)(1) = conjugate(clov_triang_t()(1)( 0)) * in_t()(2)(0)
+                  +             clov_diag_t()(1)( 1)  * in_t()(2)(1)
+                  +           clov_triang_t()(1)( 5)  * in_t()(2)(2)
+                  +           clov_triang_t()(1)( 6)  * in_t()(3)(0)
+                  +           clov_triang_t()(1)( 7)  * in_t()(3)(1)
+                  +           clov_triang_t()(1)( 8)  * in_t()(3)(2);
+
+      res()(2)(2) = conjugate(clov_triang_t()(1)( 1)) * in_t()(2)(0)
+                  + conjugate(clov_triang_t()(1)( 5)) * in_t()(2)(1)
+                  +             clov_diag_t()(1)( 2)  * in_t()(2)(2)
+                  +           clov_triang_t()(1)( 9)  * in_t()(3)(0)
+                  +           clov_triang_t()(1)(10)  * in_t()(3)(1)
+                  +           clov_triang_t()(1)(11)  * in_t()(3)(2);
+
+      res()(3)(0) = conjugate(clov_triang_t()(1)( 2)) * in_t()(2)(0)
+                  + conjugate(clov_triang_t()(1)( 6)) * in_t()(2)(1)
+                  + conjugate(clov_triang_t()(1)( 9)) * in_t()(2)(2)
+                  +             clov_diag_t()(1)( 3)  * in_t()(3)(0)
+                  +           clov_triang_t()(1)(12)  * in_t()(3)(1)
+                  +           clov_triang_t()(1)(13)  * in_t()(3)(2);
+
+      res()(3)(1) = conjugate(clov_triang_t()(1)( 3)) * in_t()(2)(0)
+                  + conjugate(clov_triang_t()(1)( 7)) * in_t()(2)(1)
+                  + conjugate(clov_triang_t()(1)(10)) * in_t()(2)(2)
+                  + conjugate(clov_triang_t()(1)(12)) * in_t()(3)(0)
+                  +             clov_diag_t()(1)( 4)  * in_t()(3)(1)
+                  +           clov_triang_t()(1)(14)  * in_t()(3)(2);
+
+      res()(3)(2) = conjugate(clov_triang_t()(1)( 4)) * in_t()(2)(0)
+                  + conjugate(clov_triang_t()(1)( 8)) * in_t()(2)(1)
+                  + conjugate(clov_triang_t()(1)(11)) * in_t()(2)(2)
+                  + conjugate(clov_triang_t()(1)(13)) * in_t()(3)(0)
+                  + conjugate(clov_triang_t()(1)(14)) * in_t()(3)(1)
+                  +             clov_diag_t()(1)( 5)  * in_t()(3)(2);
+      coalescedWrite(out_v[ss], res);
+    });
+  }
+
+  void Mooee_original_nosplit_withstream(const FermionField& in, FermionField& out) {
+    conformable(in.Grid(), out.Grid());
+    conformable(clov_red.Grid(), in.Grid());
+    out.Checkerboard() = in.Checkerboard();
+    autoView(clov_red_v, clov_red, AcceleratorRead);
+    autoView(in_v, in, AcceleratorRead);
+    autoView(out_v, out, AcceleratorWrite);
+    typedef decltype(coalescedRead(out_v[0])) calcSpinor;
+    const uint64_t Nsite = clov_red.Grid()->oSites();
+    accelerator_for(ss, Nsite, Simd::Nsimd(), {
+      calcSpinor res = Zero();
+      calcSpinor in_t = in_v(ss);
+      auto clov_red_t = clov_red_v(ss);
+      for(int block=0; block<Nhs; block++) {
+        int s_start = block*Nhs;
+        for(int i=0; i<Nred; i++) {
+          for(int j=0; j<Nred; j++) {
+            int si = s_start + i/Nc, ci = i%Nc;
+            int sj = s_start + j/Nc, cj = j%Nc;
+            if (i <= j) {
+              res()(si)(ci) = res()(si)(ci) + clov_red_t()(block)(index_red(i, j)) * in_t()(sj)(cj);
+            } else {
+              res()(si)(ci) = res()(si)(ci) + conjugate(clov_red_t()(block)(index_red(i, j))) * in_t()(sj)(cj);
+            }
+          }
+        }
+      }
+      coalescedWriteNonTemporal(out_v[ss], res);
+    });
+  }
+
+  void Mooee_original_withsplit_withstream(const FermionField& in, FermionField& out) {
+    conformable(in.Grid(), out.Grid());
+    conformable(clov_diag.Grid(), in.Grid());
+    conformable(clov_diag.Grid(), clov_triang.Grid());
+    out.Checkerboard() = in.Checkerboard();
+    autoView(clov_diag_v, clov_diag, AcceleratorRead);
+    autoView(clov_triang_v, clov_triang, AcceleratorRead);
+    autoView(in_v, in, AcceleratorRead);
+    autoView(out_v, out, AcceleratorWrite);
+    typedef decltype(coalescedRead(out_v[0])) calcSpinor;
+    const uint64_t Nsite = clov_diag.Grid()->oSites();
+    accelerator_for(ss, Nsite, Simd::Nsimd(), {
+      calcSpinor res = Zero();
+      calcSpinor in_t = in_v(ss);
+      auto clov_diag_t = clov_diag_v(ss);
+      auto clov_triang_t = clov_triang_v(ss);
+      for(int block=0; block<Nhs; block++) {
+        int s_start = block*Nhs;
+        for(int i=0; i<Nred; i++) {
+          for(int j=0; j<Nred; j++) {
+            int si = s_start + i/Nc, ci = i%Nc;
+            int sj = s_start + j/Nc, cj = j%Nc;
+            if (i == j) {
+              res()(si)(ci) = res()(si)(ci) + clov_diag_t()(block)(i) * in_t()(sj)(cj);
+            } else if (i < j) {
+              res()(si)(ci) = res()(si)(ci) + clov_triang_t()(block)(index_triang(i, j)) * in_t()(sj)(cj);
+            } else { // i > j
+              res()(si)(ci) = res()(si)(ci) + conjugate(clov_triang_t()(block)(index_triang(i, j))) * in_t()(sj)(cj);
+            }
+          }
+        }
+      }
+      coalescedWriteNonTemporal(out_v[ss], res);
+    });
+  }
+
+  void Mooee_original_nosplit_indextable_withstream(const FermionField& in, FermionField& out) {
+    conformable(in.Grid(), out.Grid());
+    conformable(clov_red.Grid(), in.Grid());
+    out.Checkerboard() = in.Checkerboard();
+    autoView(clov_red_v, clov_red, AcceleratorRead);
+    autoView(in_v, in, AcceleratorRead);
+    autoView(out_v, out, AcceleratorWrite);
+    constexpr int N = Nred*Nred;
+    const int* idx_tab = &index_table[0];
+    typedef decltype(coalescedRead(out_v[0])) calcSpinor;
+    const uint64_t Nsite = clov_red.Grid()->oSites();
+    accelerator_for(ss, Nsite, Simd::Nsimd(), {
+      calcSpinor res = Zero();
+      calcSpinor in_t = in_v(ss);
+      auto clov_red_t = clov_red_v(ss);
+      for(int block=0; block<Nhs; block++) {
+        int s_start = block*Nhs;
+        for(int idx=0; idx<N; idx++) {
+          int i = idx/Nred; int j = idx%Nred;
+          int si = s_start + i/Nc, ci = i%Nc;
+          int sj = s_start + j/Nc, cj = j%Nc;
+          if (i <= j) {
+            res()(si)(ci) = res()(si)(ci) + clov_red_t()(block)(idx_tab[idx]) * in_t()(sj)(cj);
+          } else {
+            res()(si)(ci) = res()(si)(ci) + conjugate(clov_red_t()(block)(idx_tab[idx])) * in_t()(sj)(cj);
+          }
+        }
+      }
+      coalescedWriteNonTemporal(out_v[ss], res);
+    });
+  }
+
+  void Mooee_handunrolled_nosplit_withstream(const FermionField& in, FermionField& out) {
+    conformable(in.Grid(), out.Grid());
+    conformable(clov_red.Grid(), in.Grid());
+    out.Checkerboard() = in.Checkerboard();
+    autoView(clov_red_v, clov_red, AcceleratorRead);
+    autoView(in_v, in, AcceleratorRead);
+    autoView(out_v, out, AcceleratorWrite);
+    typedef decltype(coalescedRead(out_v[0])) calcSpinor;
+    const uint64_t Nsite = clov_red.Grid()->oSites();
+    accelerator_for(ss, Nsite, Simd::Nsimd(), {
+      calcSpinor res;
+      calcSpinor in_t = in_v(ss);
+      auto clov_red_t = clov_red_v(ss);
+
+      // upper half
+      res()(0)(0) =           clov_red_t()(0)( 0)  * in_t()(0)(0)
+                  +           clov_red_t()(0)( 6)  * in_t()(0)(1)
+                  +           clov_red_t()(0)( 7)  * in_t()(0)(2)
+                  +           clov_red_t()(0)( 8)  * in_t()(1)(0)
+                  +           clov_red_t()(0)( 9)  * in_t()(1)(1)
+                  +           clov_red_t()(0)(10)  * in_t()(1)(2);
+
+      res()(0)(1) = conjugate(clov_red_t()(0)( 6)) * in_t()(0)(0)
+                  +           clov_red_t()(0)( 1)  * in_t()(0)(1)
+                  +           clov_red_t()(0)(11)  * in_t()(0)(2)
+                  +           clov_red_t()(0)(12)  * in_t()(1)(0)
+                  +           clov_red_t()(0)(13)  * in_t()(1)(1)
+                  +           clov_red_t()(0)(14)  * in_t()(1)(2);
+
+      res()(0)(2) = conjugate(clov_red_t()(0)( 7)) * in_t()(0)(0)
+                  + conjugate(clov_red_t()(0)(11)) * in_t()(0)(1)
+                  +           clov_red_t()(0)( 2)  * in_t()(0)(2)
+                  +           clov_red_t()(0)(15)  * in_t()(1)(0)
+                  +           clov_red_t()(0)(16)  * in_t()(1)(1)
+                  +           clov_red_t()(0)(17)  * in_t()(1)(2);
+
+      res()(1)(0) = conjugate(clov_red_t()(0)( 8)) * in_t()(0)(0)
+                  + conjugate(clov_red_t()(0)(12)) * in_t()(0)(1)
+                  + conjugate(clov_red_t()(0)(15)) * in_t()(0)(2)
+                  +           clov_red_t()(0)( 3)  * in_t()(1)(0)
+                  +           clov_red_t()(0)(18)  * in_t()(1)(1)
+                  +           clov_red_t()(0)(19)  * in_t()(1)(2);
+
+      res()(1)(1) = conjugate(clov_red_t()(0)( 9)) * in_t()(0)(0)
+                  + conjugate(clov_red_t()(0)(13)) * in_t()(0)(1)
+                  + conjugate(clov_red_t()(0)(16)) * in_t()(0)(2)
+                  + conjugate(clov_red_t()(0)(18)) * in_t()(1)(0)
+                  +           clov_red_t()(0)( 4)  * in_t()(1)(1)
+                  +           clov_red_t()(0)(20)  * in_t()(1)(2);
+
+      res()(1)(2) = conjugate(clov_red_t()(0)(10)) * in_t()(0)(0)
+                  + conjugate(clov_red_t()(0)(14)) * in_t()(0)(1)
+                  + conjugate(clov_red_t()(0)(17)) * in_t()(0)(2)
+                  + conjugate(clov_red_t()(0)(19)) * in_t()(1)(0)
+                  + conjugate(clov_red_t()(0)(20)) * in_t()(1)(1)
+                  +           clov_red_t()(0)( 5)  * in_t()(1)(2);
+
+      // lower half
+      res()(2)(0) =           clov_red_t()(1)( 0)  * in_t()(2)(0)
+                  +           clov_red_t()(1)( 6)  * in_t()(2)(1)
+                  +           clov_red_t()(1)( 7)  * in_t()(2)(2)
+                  +           clov_red_t()(1)( 8)  * in_t()(3)(0)
+                  +           clov_red_t()(1)( 9)  * in_t()(3)(1)
+                  +           clov_red_t()(1)(10)  * in_t()(3)(2);
+
+      res()(2)(1) = conjugate(clov_red_t()(1)( 6)) * in_t()(2)(0)
+                  +           clov_red_t()(1)( 1)  * in_t()(2)(1)
+                  +           clov_red_t()(1)(11)  * in_t()(2)(2)
+                  +           clov_red_t()(1)(12)  * in_t()(3)(0)
+                  +           clov_red_t()(1)(13)  * in_t()(3)(1)
+                  +           clov_red_t()(1)(14)  * in_t()(3)(2);
+
+      res()(2)(2) = conjugate(clov_red_t()(1)( 7)) * in_t()(2)(0)
+                  + conjugate(clov_red_t()(1)(11)) * in_t()(2)(1)
+                  +           clov_red_t()(1)( 2)  * in_t()(2)(2)
+                  +           clov_red_t()(1)(15)  * in_t()(3)(0)
+                  +           clov_red_t()(1)(16)  * in_t()(3)(1)
+                  +           clov_red_t()(1)(17)  * in_t()(3)(2);
+
+      res()(3)(0) = conjugate(clov_red_t()(1)( 8)) * in_t()(2)(0)
+                  + conjugate(clov_red_t()(1)(12)) * in_t()(2)(1)
+                  + conjugate(clov_red_t()(1)(15)) * in_t()(2)(2)
+                  +           clov_red_t()(1)( 3)  * in_t()(3)(0)
+                  +           clov_red_t()(1)(18)  * in_t()(3)(1)
+                  +           clov_red_t()(1)(19)  * in_t()(3)(2);
+
+      res()(3)(1) = conjugate(clov_red_t()(1)( 9)) * in_t()(2)(0)
+                  + conjugate(clov_red_t()(1)(13)) * in_t()(2)(1)
+                  + conjugate(clov_red_t()(1)(16)) * in_t()(2)(2)
+                  + conjugate(clov_red_t()(1)(18)) * in_t()(3)(0)
+                  +           clov_red_t()(1)( 4)  * in_t()(3)(1)
+                  +           clov_red_t()(1)(20)  * in_t()(3)(2);
+
+      res()(3)(2) = conjugate(clov_red_t()(1)(10)) * in_t()(2)(0)
+                  + conjugate(clov_red_t()(1)(14)) * in_t()(2)(1)
+                  + conjugate(clov_red_t()(1)(17)) * in_t()(2)(2)
+                  + conjugate(clov_red_t()(1)(19)) * in_t()(3)(0)
+                  + conjugate(clov_red_t()(1)(20)) * in_t()(3)(1)
+                  +           clov_red_t()(1)( 5)  * in_t()(3)(2);
+      coalescedWriteNonTemporal(out_v[ss], res);
+    });
+  }
+
+  void Mooee_handunrolled_withsplit_withstream(const FermionField& in, FermionField& out) {
+    conformable(in.Grid(), out.Grid());
+    conformable(clov_diag.Grid(), in.Grid());
+    conformable(clov_diag.Grid(), clov_triang.Grid());
+    out.Checkerboard() = in.Checkerboard();
+    autoView(clov_diag_v, clov_diag, AcceleratorRead);
+    autoView(clov_triang_v, clov_triang, AcceleratorRead);
+    autoView(in_v, in, AcceleratorRead);
+    autoView(out_v, out, AcceleratorWrite);
+    typedef decltype(coalescedRead(out_v[0])) calcSpinor;
+    const uint64_t Nsite = clov_diag.Grid()->oSites();
+    accelerator_for(ss, Nsite, Simd::Nsimd(), {
+      calcSpinor res;
+      calcSpinor in_t = in_v(ss);
+      auto clov_diag_t = clov_diag_v(ss);
+      auto clov_triang_t = clov_triang_v(ss);
+
+      // upper half
+      res()(0)(0) =             clov_diag_t()(0)( 0)  * in_t()(0)(0)
+                  +           clov_triang_t()(0)( 0)  * in_t()(0)(1)
+                  +           clov_triang_t()(0)( 1)  * in_t()(0)(2)
+                  +           clov_triang_t()(0)( 2)  * in_t()(1)(0)
+                  +           clov_triang_t()(0)( 3)  * in_t()(1)(1)
+                  +           clov_triang_t()(0)( 4)  * in_t()(1)(2);
+
+      res()(0)(1) = conjugate(clov_triang_t()(0)( 0)) * in_t()(0)(0)
+                  +             clov_diag_t()(0)( 1)  * in_t()(0)(1)
+                  +           clov_triang_t()(0)( 5)  * in_t()(0)(2)
+                  +           clov_triang_t()(0)( 6)  * in_t()(1)(0)
+                  +           clov_triang_t()(0)( 7)  * in_t()(1)(1)
+                  +           clov_triang_t()(0)( 8)  * in_t()(1)(2);
+
+      res()(0)(2) = conjugate(clov_triang_t()(0)( 1)) * in_t()(0)(0)
+                  + conjugate(clov_triang_t()(0)( 5)) * in_t()(0)(1)
+                  +             clov_diag_t()(0)( 2)  * in_t()(0)(2)
+                  +           clov_triang_t()(0)( 9)  * in_t()(1)(0)
+                  +           clov_triang_t()(0)(10)  * in_t()(1)(1)
+                  +           clov_triang_t()(0)(11)  * in_t()(1)(2);
+
+      res()(1)(0) = conjugate(clov_triang_t()(0)( 2)) * in_t()(0)(0)
+                  + conjugate(clov_triang_t()(0)( 6)) * in_t()(0)(1)
+                  + conjugate(clov_triang_t()(0)( 9)) * in_t()(0)(2)
+                  +             clov_diag_t()(0)( 3)  * in_t()(1)(0)
+                  +           clov_triang_t()(0)(12)  * in_t()(1)(1)
+                  +           clov_triang_t()(0)(13)  * in_t()(1)(2);
+
+      res()(1)(1) = conjugate(clov_triang_t()(0)( 3)) * in_t()(0)(0)
+                  + conjugate(clov_triang_t()(0)( 7)) * in_t()(0)(1)
+                  + conjugate(clov_triang_t()(0)(10)) * in_t()(0)(2)
+                  + conjugate(clov_triang_t()(0)(12)) * in_t()(1)(0)
+                  +             clov_diag_t()(0)( 4)  * in_t()(1)(1)
+                  +           clov_triang_t()(0)(14)  * in_t()(1)(2);
+
+      res()(1)(2) = conjugate(clov_triang_t()(0)( 4)) * in_t()(0)(0)
+                  + conjugate(clov_triang_t()(0)( 8)) * in_t()(0)(1)
+                  + conjugate(clov_triang_t()(0)(11)) * in_t()(0)(2)
+                  + conjugate(clov_triang_t()(0)(13)) * in_t()(1)(0)
+                  + conjugate(clov_triang_t()(0)(14)) * in_t()(1)(1)
+                  +             clov_diag_t()(0)( 5)  * in_t()(1)(2);
+
+      // lower half
+      res()(2)(0) =             clov_diag_t()(1)( 0)  * in_t()(2)(0)
+                  +           clov_triang_t()(1)( 0)  * in_t()(2)(1)
+                  +           clov_triang_t()(1)( 1)  * in_t()(2)(2)
+                  +           clov_triang_t()(1)( 2)  * in_t()(3)(0)
+                  +           clov_triang_t()(1)( 3)  * in_t()(3)(1)
+                  +           clov_triang_t()(1)( 4)  * in_t()(3)(2);
+
+      res()(2)(1) = conjugate(clov_triang_t()(1)( 0)) * in_t()(2)(0)
+                  +             clov_diag_t()(1)( 1)  * in_t()(2)(1)
+                  +           clov_triang_t()(1)( 5)  * in_t()(2)(2)
+                  +           clov_triang_t()(1)( 6)  * in_t()(3)(0)
+                  +           clov_triang_t()(1)( 7)  * in_t()(3)(1)
+                  +           clov_triang_t()(1)( 8)  * in_t()(3)(2);
+
+      res()(2)(2) = conjugate(clov_triang_t()(1)( 1)) * in_t()(2)(0)
+                  + conjugate(clov_triang_t()(1)( 5)) * in_t()(2)(1)
+                  +             clov_diag_t()(1)( 2)  * in_t()(2)(2)
+                  +           clov_triang_t()(1)( 9)  * in_t()(3)(0)
+                  +           clov_triang_t()(1)(10)  * in_t()(3)(1)
+                  +           clov_triang_t()(1)(11)  * in_t()(3)(2);
+
+      res()(3)(0) = conjugate(clov_triang_t()(1)( 2)) * in_t()(2)(0)
+                  + conjugate(clov_triang_t()(1)( 6)) * in_t()(2)(1)
+                  + conjugate(clov_triang_t()(1)( 9)) * in_t()(2)(2)
+                  +             clov_diag_t()(1)( 3)  * in_t()(3)(0)
+                  +           clov_triang_t()(1)(12)  * in_t()(3)(1)
+                  +           clov_triang_t()(1)(13)  * in_t()(3)(2);
+
+      res()(3)(1) = conjugate(clov_triang_t()(1)( 3)) * in_t()(2)(0)
+                  + conjugate(clov_triang_t()(1)( 7)) * in_t()(2)(1)
+                  + conjugate(clov_triang_t()(1)(10)) * in_t()(2)(2)
+                  + conjugate(clov_triang_t()(1)(12)) * in_t()(3)(0)
+                  +             clov_diag_t()(1)( 4)  * in_t()(3)(1)
+                  +           clov_triang_t()(1)(14)  * in_t()(3)(2);
+
+      res()(3)(2) = conjugate(clov_triang_t()(1)( 4)) * in_t()(2)(0)
+                  + conjugate(clov_triang_t()(1)( 8)) * in_t()(2)(1)
+                  + conjugate(clov_triang_t()(1)(11)) * in_t()(2)(2)
+                  + conjugate(clov_triang_t()(1)(13)) * in_t()(3)(0)
+                  + conjugate(clov_triang_t()(1)(14)) * in_t()(3)(1)
+                  +             clov_diag_t()(1)( 5)  * in_t()(3)(2);
+      coalescedWriteNonTemporal(out_v[ss], res);
+    });
   }
 
   /////////////////////////////////////////////
@@ -152,8 +784,15 @@ public:
 
 private:
 
-  CloverReducedField clov;
+  CloverDiagonalField clov_diag;
+  CloverTriangleField clov_triang;
+  CloverReducedField clov_red;
   static constexpr int Nred = Nc * Nhs;
+public:
+  const Vector<int> index_table = {
+    0,  6,  7, 8,  9, 10, 6,  1, 11, 12, 13, 14,  7, 11,  2, 15, 16, 17,
+    8, 12, 15, 3, 18, 19, 9, 13, 16, 18,  4, 20, 10, 14, 17, 19, 20,  5
+  };
 };
 
 
@@ -173,6 +812,22 @@ int readFromCommandLineInt(int* argc, char*** argv, const std::string& option, i
   char _buf[1024];\
   sprintf(_buf, __VA_ARGS__);\
   std::cout << GridLogMessage << _buf;\
+}
+
+
+template<typename Field>
+bool resultsAgree(const Field& ref, const Field& res, const std::string& name) {
+  RealD checkTolerance = (getPrecision<Field>::value == 1) ? 1e-7 : 1e-15;
+  Field diff(ref.Grid());
+  diff = ref - res;
+  auto absDev = norm2(diff);
+  auto relDev = absDev / norm2(ref);
+  std::cout << GridLogMessage
+            << "norm2(reference), norm2(" << name << "), abs. deviation, rel. deviation: " << norm2(ref) << " "
+            << norm2(res) << " " << absDev << " " << relDev << " -> check "
+            << ((relDev < checkTolerance) ? "passed" : "failed") << std::endl;
+
+  return relDev <= checkTolerance;
 }
 
 
@@ -216,63 +871,126 @@ int main(int argc, char** argv) {
   const int nIter = readFromCommandLineInt(&argc, &argv, "--niter", 1000);
   double volume=1.0; for(int mu=0; mu<Nd; mu++) volume*=UGrid->_fdimensions[mu];
 
-  // warmup dhop
+  // warmup + measure dhop
+  grid_printf("hop warmup\n"); fflush(stdout);
   for(auto n : {1, 2, 3, 4, 5}) Dwc.Dhop(src, hop, 0);
-
-  // measure dhop
+  grid_printf("hop measurement\n"); fflush(stdout);
   double t0 = usecond();
   for(int n = 0; n < nIter; n++) Dwc.Dhop(src, hop, 0);
   double t1 = usecond();
+  double secs_hop = (t1-t0)/1e6;
 
-  // warmup reference clover
+  // warmup + measure reference clover
+  grid_printf("reference warmup\n"); fflush(stdout);
   for(auto n : {1, 2, 3, 4, 5}) Dwc.Mooee(src, ref);
-
-  // measure reference clover
+  grid_printf("reference measurement\n"); fflush(stdout);
   double t2 = usecond();
   for(int n = 0; n < nIter; n++) Dwc.Mooee(src, ref);
   double t3 = usecond();
+  double secs_ref = (t3-t2)/1e6;
 
-  // warmup fast clover
+  # if 0
+  { // warmup + measure improved clover
+  grid_printf("improved warmup\n"); fflush(stdout);
   for(auto n : {1, 2, 3, 4, 5}) Dwc_fast.Mooee(src, res);
-
-  // measure fast clover
-  double t4 = usecond();
+  grid_printf("improved measurement\n"); fflush(stdout);
+  double t0 = usecond();
   for(int n = 0; n < nIter; n++) Dwc_fast.Mooee(src, res);
-  double t5 = usecond();
+  double t1 = usecond();
+  assert(resultsAgree(ref, res));
+  }
+  double secs_res = (t1-t0)/1e6;
+  # endif
 
-  // verify correctness
-  auto checkTolerance = 1e-15;
-  diff = ref - res;
-  auto absDev = norm2(diff);
-  auto relDev = absDev / norm2(ref);
-  std::cout << GridLogMessage
-            << "norm2(reference), norm2(fast), abs. deviation, rel. deviation: " << norm2(ref) << " "
-            << norm2(res) << " " << absDev << " " << relDev << " -> check "
-            << ((relDev < checkTolerance) ? "passed" : "failed") << std::endl;
-  assert(relDev <= checkTolerance);
+#if defined(GRID_CUDA)||defined(GRID_HIP)
+#define BENCH_CLOVER_VERSION(VERSION)\
+  double secs_##VERSION;\
+  {\
+    grid_printf("warmup %s\n", #VERSION); fflush(stdout);\
+    for(auto n : {1, 2, 3, 4, 5}) Dwc_fast.Mooee_##VERSION(src, res);\
+    grid_printf("measurement %s\n", #VERSION); fflush(stdout);\
+    double t0 = usecond();\
+    for(int n = 0; n < nIter; n++) Dwc_fast.Mooee_##VERSION(src, res);\
+    double t1 = usecond();\
+    secs_##VERSION = (t1-t0)/1e6;\
+  }
+#else
+#define BENCH_CLOVER_VERSION(VERSION)\
+  double secs_##VERSION;\
+  {\
+    grid_printf("warmup %s\n", #VERSION); fflush(stdout);\
+    for(auto n : {1, 2, 3, 4, 5}) Dwc_fast.Mooee_##VERSION(src, res);\
+    grid_printf("measurement %s\n", #VERSION); fflush(stdout);\
+    double t0 = usecond();\
+    for(int n = 0; n < nIter; n++) Dwc_fast.Mooee_##VERSION(src, res);\
+    double t1 = usecond();\
+    secs_##VERSION = (t1-t0)/1e6;\
+    assert(resultsAgree(ref, res, #VERSION)); \
+  }
+#endif
+
+  BENCH_CLOVER_VERSION(original_nosplit_nostream);
+  BENCH_CLOVER_VERSION(original_nosplit_withstream);
+  BENCH_CLOVER_VERSION(original_withsplit_nostream);
+  BENCH_CLOVER_VERSION(original_withsplit_withstream);
+  BENCH_CLOVER_VERSION(original_nosplit_indextable_nostream);
+  BENCH_CLOVER_VERSION(original_nosplit_indextable_withstream);
+  BENCH_CLOVER_VERSION(handunrolled_nosplit_nostream);
+  BENCH_CLOVER_VERSION(handunrolled_nosplit_withstream);
+  BENCH_CLOVER_VERSION(handunrolled_withsplit_nostream);
+  BENCH_CLOVER_VERSION(handunrolled_withsplit_withstream);
+
+#undef BENCH_CLOVER_VERSION
+
+  # if 0
+  grid_printf("indices\n");
+  fflush(stdout);
+  for(int i = 0; i < 6; i++)
+    for(int j = 0; j < 6; j++)
+      grid_printf(
+        "i = %d, j = %d, idx = %d, tab = %d\n", i, j, index_red(i, j), Dwc_fast.index_table[i * 6 + j]);
+  # endif
 
   // performance per site (use minimal values necessary)
   double hop_flop_per_site = 1320; // Rich's Talk + what Peter uses
   double hop_byte_per_site = (8 * 9 + 9 * 12) * 2 * getPrecision<LatticeFermion>::value * 4;
   double clov_flop_per_site = 504; // Rich's Talk and 1412.2629
   double clov_byte_per_site = (2 * 18 + 12 + 12) * 2 * getPrecision<LatticeFermion>::value * 4;
+  double clov_byte_per_site_performed = (12 * 12 + 12 + 12) * 2 * getPrecision<LatticeFermion>::value * 4;
 
   // total performance numbers
   double hop_gflop_total = volume * nIter * hop_flop_per_site / 1e9;
   double hop_gbyte_total = volume * nIter * hop_byte_per_site / 1e9;
   double clov_gflop_total = volume * nIter * clov_flop_per_site / 1e9;
   double clov_gbyte_total = volume * nIter * clov_byte_per_site / 1e9;
-  double secs_hop = (t1-t0)/1e6;
-  double secs_ref = (t3-t2)/1e6;
-  double secs_res = (t5-t4)/1e6;
+  double clov_gbyte_performed_total = volume * nIter * clov_byte_per_site_performed / 1e9;
+
+#define PRINT_CLOVER_VERSION(VERSION)\
+  grid_printf("Performance(%35s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n",\
+              #VERSION, secs_##VERSION, clov_gflop_total/secs_##VERSION, clov_gbyte_total/secs_##VERSION, secs_ref/secs_##VERSION, secs_##VERSION/secs_hop)
 
   // output
-  grid_printf("Performance(%9s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n",
+  grid_printf("Performance(%35s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n",
               "hop", secs_hop, hop_gflop_total/secs_hop, hop_gbyte_total/secs_hop, secs_ref/secs_hop, secs_hop/secs_hop);
-  grid_printf("Performance(%9s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n",
+  grid_printf("Performance(%35s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n",
               "reference", secs_ref, clov_gflop_total/secs_ref, clov_gbyte_total/secs_ref, secs_ref/secs_ref, secs_ref/secs_hop);
-  grid_printf("Performance(%9s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n",
-              "improved", secs_res, clov_gflop_total/secs_res, clov_gbyte_total/secs_res, secs_ref/secs_res, secs_res/secs_hop);
+
+  PRINT_CLOVER_VERSION(original_nosplit_nostream);
+  PRINT_CLOVER_VERSION(original_nosplit_withstream);
+  PRINT_CLOVER_VERSION(original_withsplit_nostream);
+  PRINT_CLOVER_VERSION(original_withsplit_withstream);
+  PRINT_CLOVER_VERSION(original_nosplit_indextable_nostream);
+  PRINT_CLOVER_VERSION(original_nosplit_indextable_withstream);
+  PRINT_CLOVER_VERSION(handunrolled_nosplit_nostream);
+  PRINT_CLOVER_VERSION(handunrolled_nosplit_withstream);
+  PRINT_CLOVER_VERSION(handunrolled_withsplit_nostream);
+  PRINT_CLOVER_VERSION(handunrolled_withsplit_withstream);
+
+  // just so we see how well the ET performs in terms of traffic
+  grid_printf("Performance(%35s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n",
+              "reference_performed", secs_ref, clov_gflop_total/secs_ref, clov_gbyte_performed_total/secs_ref, secs_ref/secs_ref, secs_ref/secs_hop);
+
+  grid_printf("finalize\n"); fflush(stdout);
 
   Grid_finalize();
 }
