@@ -85,7 +85,7 @@ void coalescedWrite(vobj & __restrict__ vec,const typename vobj::scalar_object &
   insertLane(lane,vec,extracted);
 }
 template<class vobj> accelerator_inline
-void coalescedWriteNonTemporal(vobj & __restrict__ vec,const vobj & __restrict__ extracted,int lane=0)
+void coalescedWriteNonTemporal(vobj & __restrict__ vec,const typename vobj::scalar_object & __restrict__ extracted,int lane=acceleratorSIMTlane(vobj::Nsimd()))
 {
   insertLane(lane,vec,extracted);
 }
