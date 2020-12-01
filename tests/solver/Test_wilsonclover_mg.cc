@@ -32,6 +32,20 @@
 using namespace std;
 using namespace Grid;
  
+std::string outputFilename(std::string const& prefix, GridBase* grid, int nvec) {
+  std::stringstream ss, sstmp;
+  ss << "code_grid.";
+  ss << prefix;
+  ss << ".grid_";
+  std::copy(grid->GlobalDimensions().begin(), grid->GlobalDimensions().end(), std::ostream_iterator<int>(sstmp, "x"));
+  std::string stmp = sstmp.str();;
+  ss << stmp.substr(0, stmp.length()-1);
+  ss << ".nvec_";
+  ss << nvec;
+  ss << ".bin";
+
+  return ss.str();
+}
 
 int main(int argc, char **argv) {
 
@@ -45,7 +59,7 @@ int main(int argc, char **argv) {
   fPRNG.SeedFixedIntegers(fSeeds);
 
   // clang-format off
-  LatticeFermion    src(FGrid); gaussian(fPRNG, src);
+  LatticeFermion    src(FGrid); src = 1.;
   LatticeFermion result(FGrid); result = zero;
   LatticeGaugeField Umu(FGrid); SU<Nc>::HotConfiguration(fPRNG, Umu);
   // clang-format on
@@ -72,6 +86,19 @@ int main(int argc, char **argv) {
     std::cout << GridLogMessage << "Read in " << inputXml << std::endl;
   }
 
+  if(GridCmdOptionExists(argv, argv + argc, "--config")) {
+    std::string config = GridCmdOptionPayload(argv, argv + argc, "--config");
+    assert(config.length() != 0);
+    FieldMetaData header;
+    NerscIO::readConfiguration(Umu,header,config);
+  }
+
+  typename WilsonFermionR::ImplParams implParams;
+  WilsonAnisotropyCoefficients        anisParams;
+  std::vector<Complex> boundary_phases(Nd, 1.);
+  if(GridCmdOptionExists(argv, argv + argc, "--antiperiodic")) boundary_phases[Nd - 1] = -1.;
+  implParams.boundary_phases = boundary_phases;
+
   checkParameterValidity(mgParams);
   std::cout << mgParams << std::endl;
 
@@ -80,7 +107,7 @@ int main(int argc, char **argv) {
   // Note: We do chiral doubling, so actually only nbasis/2 full basis vectors are used
   const int nbasis = 40;
 
-  WilsonCloverFermionR Dwc(Umu, *FGrid, *FrbGrid, mass, csw_r, csw_t);
+  WilsonCloverFermionR Dwc(Umu, *FGrid, *FrbGrid, mass, csw_r, csw_t, anisParams, implParams);
 
   MdagMLinearOperator<WilsonCloverFermionR, LatticeFermion> MdagMOpDwc(Dwc);
 
@@ -98,16 +125,28 @@ int main(int argc, char **argv) {
     MGPreconDwc->runChecks(toleranceForMGChecks);
   }
 
-  std::vector<std::unique_ptr<OperatorFunction<LatticeFermion>>> solversDwc;
+  if(GridCmdOptionExists(argv, argv + argc, "--writevectors")) {
+    std::ofstream ofs(outputFilename("vectors", FGrid, nbasis), ios::out | ios::binary);
+    MGPreconDwc->writeVectors(ofs);
+    ofs.close();
+  }
 
-  solversDwc.emplace_back(new ConjugateGradient<LatticeFermion>(1.0e-12, 50000, false));
-  solversDwc.emplace_back(new FlexibleGeneralisedMinimalResidual<LatticeFermion>(1.0e-12, 50000, TrivialPrecon, 100, false));
-  solversDwc.emplace_back(new FlexibleGeneralisedMinimalResidual<LatticeFermion>(1.0e-12, 50000, *MGPreconDwc, 100, false));
+  std::map<std::string, std::unique_ptr<OperatorFunction<LatticeFermion>>> solversDwc;
+
+  std::string mgName = "fgmres_direct_mg_" + std::to_string(mgParams.nLevels) + "lvl_" + (mgParams.kCycle ? "k" : "v") + "cycle";
+
+  solversDwc.emplace("cg_mdagm_none", new ConjugateGradient<LatticeFermion>(1.0e-12, 400, false));
+  solversDwc.emplace("bicgstab_direct_none", new BiCGSTAB<LatticeFermion>(1.0e-12, 400, false));
+  solversDwc.emplace("fgmres_direct_trivial", new FlexibleGeneralisedMinimalResidual<LatticeFermion>(1.0e-12, 400, TrivialPrecon, 25, false));
+  solversDwc.emplace(mgName, new FlexibleGeneralisedMinimalResidual<LatticeFermion>(1.0e-12, 400, *MGPreconDwc, 25, false));
 
   for(auto const &solver : solversDwc) {
-    std::cout << std::endl << "Starting with a new solver" << std::endl;
+    std::cout << std::endl << "Starting with solver " << solver.first << std::endl;
     result = zero;
-    (*solver)(MdagMOpDwc, src, result);
+    (*solver.second)(MdagMOpDwc, src, result);
+    std::ofstream ofs(outputFilename("dst_" + solver.first, FGrid, 1), ios::out | ios::binary);
+    writeFieldVectorized(result, ofs);
+    ofs.close();
     std::cout << std::endl;
   }
 

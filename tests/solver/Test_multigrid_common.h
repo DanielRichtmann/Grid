@@ -28,6 +28,8 @@
 #ifndef GRID_TEST_MULTIGRID_COMMON_H
 #define GRID_TEST_MULTIGRID_COMMON_H
 
+#include <fstream>
+
 namespace Grid {
 
 Zero zero;
@@ -35,6 +37,16 @@ Zero zero;
 // TODO: Can think about having one parameter struct per level and then a
 // vector of these structs. How well would that work together with the
 // serialization strategy of Grid?
+
+template<class vobj>
+void writeFieldVectorized(Lattice<vobj> const& field, std::ostream& ofs) {
+  auto tensor_size = sizeof(vobj);
+  auto field_view = field.View();
+  std::cout << GridLogMessage << "field_view.size() = " << field_view.size() << " tensor_size = " << tensor_size
+            << " norm2 = " << norm2(field) << std::endl;
+  ofs.write((char*)&field_view[0], field_view.size() * tensor_size);
+  assert(ofs.fail() == 0);
+}
 
 // clang-format off
 struct MultiGridParams : Serializable {
@@ -148,6 +160,7 @@ public:
   virtual void operator()(Field const &in, Field &out) = 0;
   virtual void runChecks(RealD tolerance)              = 0;
   virtual void reportTimings()                         = 0;
+  virtual void writeVectors(std::ofstream& ofs)        = 0;
 };
 
 template<class Fobj, class CComplex, int nBasis, int nCoarserLevels, class Matrix>
@@ -241,6 +254,8 @@ public:
                 << "norm2(vec[" << n + nb << "]) = " << norm2(_Aggregates.subspace[n + nb]) << std::endl;
     }
     _SetupProjectToChiralitiesTimer.Stop();
+
+    _Aggregates.Orthogonalise();
 
     _SetupCoarsenOperatorTimer.Start();
     _CoarseMatrix.CoarsenOperator(_LevelInfo.Grids[_CurrentLevel], fineMdagMOp, _Aggregates);
@@ -559,6 +574,12 @@ public:
 
     _NextPreconditionerLevel->resetTimers();
   }
+
+  void writeVectors(std::ofstream& ofs) {
+    for(int n = 0; n < nBasis; n++){
+      writeFieldVectorized(_Aggregates.subspace[n], ofs);
+    }
+  }
 };
 
 // Specialization for the coarsest level
@@ -641,6 +662,8 @@ public:
     _SolveTotalTimer.Reset();
     _SolveSmootherTimer.Reset();
   }
+
+  void writeVectors(std::ofstream& ofs) {}
 };
 
 template<class Fobj, class CComplex, int nBasis, int nLevels, class Matrix>

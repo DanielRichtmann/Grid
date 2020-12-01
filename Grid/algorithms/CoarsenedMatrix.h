@@ -162,7 +162,7 @@ public:
 
     RealD scale;
 
-    ConjugateGradient<FineField> CG(1.0e-2,100,false);
+    GeneralisedMinimalResidual<FineField> GMRES(1.0e-2, 100, 20, false);
     FineField noise(FineGrid);
     FineField Mn(FineGrid);
 
@@ -177,7 +177,7 @@ public:
 
       for(int i=0;i<1;i++){
 
-	CG(hermop,noise,subspace[b]);
+	GMRES(hermop,noise,subspace[b]);
 
 	noise = subspace[b];
 	scale = std::pow(norm2(noise),-0.5); 
@@ -870,7 +870,7 @@ public:
 
     std::cout << GridLogMessage<< "CoarsenMatrix Orthog "<< std::endl;
     // Orthogonalise the subblocks over the basis
-    blockOrthogonalise(InnerProd,Subspace.subspace);
+    // blockOrthogonalise(InnerProd,Subspace.subspace);
 
     // Compute the matrix elements of linop between this orthonormal
     // set of vectors.
