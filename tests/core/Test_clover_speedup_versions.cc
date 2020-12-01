@@ -182,6 +182,16 @@ public:
     }
   }
 
+  template<typename vCoeff_t> accelerator_inline vCoeff_t
+  block_triang_elem(const iVector<vCoeff_t, 15>& triang, int i, int j) {
+    assert(i != j);
+    if (i < j) {
+      return triang(index_triang(i, j));
+    } else { // i > j
+      return conjugate(triang(index_triang(i, j)));
+    }
+  }
+
   // NOTE: This was an idea, might need somewhen, leaving here
   #define unrolled_for( i, num, ... ) DO_PRAGMA(unroll) for ( uint64_t i=0;i<num;i++) { __VA_ARGS__ } ;
 
@@ -243,6 +253,49 @@ public:
         };
       };
       coalescedWrite(out_v[ss], res);
+    });
+  }
+
+  void Mooee_original_withsplit_nostream_withblockparallel(const FermionField& in, FermionField& out) {
+    conformable(in.Grid(), out.Grid());
+    conformable(clov_diag.Grid(), in.Grid());
+    conformable(clov_diag.Grid(), clov_triang.Grid());
+    out.Checkerboard() = in.Checkerboard();
+    autoView(clov_diag_v, clov_diag, AcceleratorRead);
+    autoView(clov_triang_v, clov_triang, AcceleratorRead);
+    autoView(in_v, in, AcceleratorRead);
+    autoView(out_v, out, AcceleratorWrite);
+    typedef decltype(coalescedRead(out_v[0])) calcSpinor;
+    typedef decltype(coalescedRead(out_v[0]()(0))) calcColorVector;
+    const uint64_t Nsite = clov_diag.Grid()->oSites();
+    accelerator_for(_ss, Nsite*Nblock, Simd::Nsimd(), {
+      int block   = _ss%Nblock; _ss/=Nblock;
+      int ss      = _ss%Nsite;  _ss/=Nsite;
+      int s_start = block*Nhs;
+      int c_start = block*Nc;
+      calcColorVector resLow;
+      calcColorVector resHigh;
+      calcColorVector inLow  = coalescedRead(in_v[ss]()(s_start+0));
+      calcColorVector inHigh = coalescedRead(in_v[ss]()(s_start+1));
+      auto clov_diag_t   = coalescedRead(clov_diag_v[ss]()(block));
+      auto clov_triang_t = coalescedRead(clov_triang_v[ss]()(block));
+      for(int c=0; c<Nc; c++) {
+        resLow(c)  = clov_diag_t(c_start+c) * inLow(c);
+        resHigh(c) = clov_diag_t(c_start+c) * inHigh(c);
+      }
+      for(int ci=0; ci<Nc; ci++) {
+        int ci_low  = ci; int ci_high = ci+Nc;
+        for(int cj=0; cj<Nc; cj++) {
+          if (cj == ci) continue;
+          int cj_low  = cj; int cj_high = cj+Nc;
+          resLow(ci)  = resLow(ci)  + block_triang_elem(clov_triang_t, ci_low,  cj_low)  * inLow(cj);
+          resLow(ci)  = resLow(ci)  + block_triang_elem(clov_triang_t, ci_low,  cj_high) * inHigh(cj);
+          resHigh(ci) = resHigh(ci) + block_triang_elem(clov_triang_t, ci_high, cj_low)  * inLow(cj);
+          resHigh(ci) = resHigh(ci) + block_triang_elem(clov_triang_t, ci_high, cj_high) * inHigh(cj);
+        };
+      };
+      coalescedWrite(out_v[ss]()(s_start+0), resLow);
+      coalescedWrite(out_v[ss]()(s_start+1), resHigh);
     });
   }
 
@@ -735,6 +788,7 @@ private:
   CloverTriangleField clov_triang;
   CloverReducedField clov_red;
   static constexpr int Nred = Nc * Nhs;
+  static constexpr int Nblock = Nhs;
 };
 
 
@@ -894,6 +948,7 @@ void runBenchmark(int* argc, char*** argv) {
   BENCH_CLOVER_VERSION(original_nosplit_nostream);
   BENCH_CLOVER_VERSION(original_nosplit_withstream);
   BENCH_CLOVER_VERSION(original_withsplit_nostream);
+  // BENCH_CLOVER_VERSION(original_withsplit_nostream_withblockparallel);
   BENCH_CLOVER_VERSION(original_withsplit_withstream);
   BENCH_CLOVER_VERSION(handunrolled_nosplit_nostream);
   BENCH_CLOVER_VERSION(handunrolled_nosplit_withstream);
@@ -917,18 +972,19 @@ void runBenchmark(int* argc, char*** argv) {
   double clov_gbyte_performed_total = volume * nIter * clov_byte_per_site_performed / 1e9;
 
 #define PRINT_CLOVER_VERSION(VERSION)\
-  grid_printf("Performance(%35s, %s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n",\
+  grid_printf("Performance(%50s, %s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n",\
               #VERSION, precision.c_str(), secs_##VERSION, clov_gflop_total/secs_##VERSION, clov_gbyte_total/secs_##VERSION, secs_ref/secs_##VERSION, secs_##VERSION/secs_hop)
 
   // output
-  grid_printf("Performance(%35s, %s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n",
+  grid_printf("Performance(%50s, %s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n",
               "hop", precision.c_str(), secs_hop, hop_gflop_total/secs_hop, hop_gbyte_total/secs_hop, secs_ref/secs_hop, secs_hop/secs_hop);
-  grid_printf("Performance(%35s, %s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n",
+  grid_printf("Performance(%50s, %s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n",
               "reference", precision.c_str(), secs_ref, clov_gflop_total/secs_ref, clov_gbyte_total/secs_ref, secs_ref/secs_ref, secs_ref/secs_hop);
 
   PRINT_CLOVER_VERSION(original_nosplit_nostream);
   PRINT_CLOVER_VERSION(original_nosplit_withstream);
   PRINT_CLOVER_VERSION(original_withsplit_nostream);
+  // PRINT_CLOVER_VERSION(original_withsplit_nostream_withblockparallel);
   PRINT_CLOVER_VERSION(original_withsplit_withstream);
   PRINT_CLOVER_VERSION(handunrolled_nosplit_nostream);
   PRINT_CLOVER_VERSION(handunrolled_nosplit_withstream);
@@ -936,7 +992,7 @@ void runBenchmark(int* argc, char*** argv) {
   PRINT_CLOVER_VERSION(handunrolled_withsplit_withstream);
 
   // just so we see how well the ET performs in terms of traffic
-  grid_printf("Performance(%35s, %s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n",
+  grid_printf("Performance(%50s, %s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n",
               "reference_performed", precision.c_str(), secs_ref, clov_gflop_total/secs_ref, clov_gbyte_performed_total/secs_ref, secs_ref/secs_ref, secs_ref/secs_hop);
 
   grid_printf("finalize %s\n", precision.c_str()); fflush(stdout);
