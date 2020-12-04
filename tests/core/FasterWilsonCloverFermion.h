@@ -7,6 +7,7 @@
     Copyright (C) 2020
 
     Author: Daniel Richtmann <daniel.richtmann@gmail.com>
+    Author: Nils Meyer <nils.meyer@ur.de>
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -272,6 +273,64 @@ public:
     typedef SiteSpinor CalcSpinor;
     const uint64_t Nsite = diag.Grid()->oSites();
 
+#if defined(A64FX) || defined(A64FXFIXEDSIZE)
+#define PREFETCH_CLOVER(BASE) {                                     \
+    uint64_t base;                                                  \
+    int pf_dist_L1 = 1;                                             \
+    int pf_dist_L2 = -5; /* -> penalty -> disable */                \
+                                                                    \
+    if ((pf_dist_L1 >= 0) && (ss + pf_dist_L1 < Nsite)) {           \
+      base = (uint64_t)&diag_t()(pf_dist_L1+BASE)(0);               \
+      svprfd(svptrue_b64(), (int64_t*)(base +    0), SV_PLDL1STRM); \
+      svprfd(svptrue_b64(), (int64_t*)(base +  256), SV_PLDL1STRM); \
+      svprfd(svptrue_b64(), (int64_t*)(base +  512), SV_PLDL1STRM); \
+      svprfd(svptrue_b64(), (int64_t*)(base +  768), SV_PLDL1STRM); \
+      svprfd(svptrue_b64(), (int64_t*)(base + 1024), SV_PLDL1STRM); \
+      svprfd(svptrue_b64(), (int64_t*)(base + 1280), SV_PLDL1STRM); \
+    }                                                               \
+                                                                    \
+    if ((pf_dist_L2 >= 0) && (ss + pf_dist_L2 < Nsite)) {           \
+      base = (uint64_t)&diag_t()(pf_dist_L2+BASE)(0);               \
+      svprfd(svptrue_b64(), (int64_t*)(base +    0), SV_PLDL2STRM); \
+      svprfd(svptrue_b64(), (int64_t*)(base +  256), SV_PLDL2STRM); \
+      svprfd(svptrue_b64(), (int64_t*)(base +  512), SV_PLDL2STRM); \
+      svprfd(svptrue_b64(), (int64_t*)(base +  768), SV_PLDL2STRM); \
+      svprfd(svptrue_b64(), (int64_t*)(base + 1024), SV_PLDL2STRM); \
+      svprfd(svptrue_b64(), (int64_t*)(base + 1280), SV_PLDL2STRM); \
+    }                                                               \
+  }
+// TODO: Implement/generalize this for other architectures
+// I played around a bit on KNL (see below) but didn't bring anything
+// #elif defined(AVX512)
+// #define PREFETCH_CLOVER(BASE) {                              \
+//     uint64_t base;                                           \
+//     int pf_dist_L1 = 1;                                      \
+//     int pf_dist_L2 = +4;                                     \
+//                                                              \
+//     if ((pf_dist_L1 >= 0) && (ss + pf_dist_L1 < Nsite)) {    \
+//       base = (uint64_t)&diag_t()(pf_dist_L1+BASE)(0);        \
+//       _mm_prefetch((const char*)(base +    0), _MM_HINT_T0); \
+//       _mm_prefetch((const char*)(base +   64), _MM_HINT_T0); \
+//       _mm_prefetch((const char*)(base +  128), _MM_HINT_T0); \
+//       _mm_prefetch((const char*)(base +  192), _MM_HINT_T0); \
+//       _mm_prefetch((const char*)(base +  256), _MM_HINT_T0); \
+//       _mm_prefetch((const char*)(base +  320), _MM_HINT_T0); \
+//     }                                                        \
+//                                                              \
+//     if ((pf_dist_L2 >= 0) && (ss + pf_dist_L2 < Nsite)) {    \
+//       base = (uint64_t)&diag_t()(pf_dist_L2+BASE)(0);        \
+//       _mm_prefetch((const char*)(base +    0), _MM_HINT_T1); \
+//       _mm_prefetch((const char*)(base +   64), _MM_HINT_T1); \
+//       _mm_prefetch((const char*)(base +  128), _MM_HINT_T1); \
+//       _mm_prefetch((const char*)(base +  192), _MM_HINT_T1); \
+//       _mm_prefetch((const char*)(base +  256), _MM_HINT_T1); \
+//       _mm_prefetch((const char*)(base +  320), _MM_HINT_T1); \
+//     }                                                        \
+//   }
+#else
+#define PREFETCH_CLOVER(BASE)
+#endif
+
     thread_for(ss, Nsite, {
       CalcSpinor res;
       CalcSpinor in_t = in_v[ss];
@@ -279,91 +338,130 @@ public:
       auto triangle_t = triangle_v[ss];
 
       // upper half
-      res()(0)(0) =               diag_t()(0)( 0)  * in_t()(0)(0)
-                  +           triangle_t()(0)( 0)  * in_t()(0)(1)
-                  +           triangle_t()(0)( 1)  * in_t()(0)(2)
-                  +           triangle_t()(0)( 2)  * in_t()(1)(0)
-                  +           triangle_t()(0)( 3)  * in_t()(1)(1)
-                  +           triangle_t()(0)( 4)  * in_t()(1)(2);
+      PREFETCH_CLOVER(0);
 
-      res()(0)(1) = conjugate(triangle_t()(0)( 0)) * in_t()(0)(0)
-                  +               diag_t()(0)( 1)  * in_t()(0)(1)
-                  +           triangle_t()(0)( 5)  * in_t()(0)(2)
-                  +           triangle_t()(0)( 6)  * in_t()(1)(0)
-                  +           triangle_t()(0)( 7)  * in_t()(1)(1)
-                  +           triangle_t()(0)( 8)  * in_t()(1)(2);
+      auto in_cc_0_0 = conjugate(in_t()(0)(0)); // Nils: reduces number
+      auto in_cc_0_1 = conjugate(in_t()(0)(1)); // of conjugates from
+      auto in_cc_0_2 = conjugate(in_t()(0)(2)); // 30 to 20
+      auto in_cc_1_0 = conjugate(in_t()(1)(0));
+      auto in_cc_1_1 = conjugate(in_t()(1)(1));
 
-      res()(0)(2) = conjugate(triangle_t()(0)( 1)) * in_t()(0)(0)
-                  + conjugate(triangle_t()(0)( 5)) * in_t()(0)(1)
-                  +               diag_t()(0)( 2)  * in_t()(0)(2)
-                  +           triangle_t()(0)( 9)  * in_t()(1)(0)
-                  +           triangle_t()(0)(10)  * in_t()(1)(1)
-                  +           triangle_t()(0)(11)  * in_t()(1)(2);
+      res()(0)(0) =               diag_t()(0)( 0) * in_t()(0)(0)
+                  +           triangle_t()(0)( 0) * in_t()(0)(1)
+                  +           triangle_t()(0)( 1) * in_t()(0)(2)
+                  +           triangle_t()(0)( 2) * in_t()(1)(0)
+                  +           triangle_t()(0)( 3) * in_t()(1)(1)
+                  +           triangle_t()(0)( 4) * in_t()(1)(2);
 
-      res()(1)(0) = conjugate(triangle_t()(0)( 2)) * in_t()(0)(0)
-                  + conjugate(triangle_t()(0)( 6)) * in_t()(0)(1)
-                  + conjugate(triangle_t()(0)( 9)) * in_t()(0)(2)
-                  +               diag_t()(0)( 3)  * in_t()(1)(0)
-                  +           triangle_t()(0)(12)  * in_t()(1)(1)
-                  +           triangle_t()(0)(13)  * in_t()(1)(2);
+      res()(0)(1) =           triangle_t()(0)( 0) * in_cc_0_0;
+      res()(0)(1) =               diag_t()(0)( 1) * in_t()(0)(1)
+                  +           triangle_t()(0)( 5) * in_t()(0)(2)
+                  +           triangle_t()(0)( 6) * in_t()(1)(0)
+                  +           triangle_t()(0)( 7) * in_t()(1)(1)
+                  +           triangle_t()(0)( 8) * in_t()(1)(2)
+                  + conjugate(       res()(0)( 1));
 
-      res()(1)(1) = conjugate(triangle_t()(0)( 3)) * in_t()(0)(0)
-                  + conjugate(triangle_t()(0)( 7)) * in_t()(0)(1)
-                  + conjugate(triangle_t()(0)(10)) * in_t()(0)(2)
-                  + conjugate(triangle_t()(0)(12)) * in_t()(1)(0)
-                  +               diag_t()(0)( 4)  * in_t()(1)(1)
-                  +           triangle_t()(0)(14)  * in_t()(1)(2);
+      res()(0)(2) =           triangle_t()(0)( 1) * in_cc_0_0
+                  +           triangle_t()(0)( 5) * in_cc_0_1;
+      res()(0)(2) =               diag_t()(0)( 2) * in_t()(0)(2)
+                  +           triangle_t()(0)( 9) * in_t()(1)(0)
+                  +           triangle_t()(0)(10) * in_t()(1)(1)
+                  +           triangle_t()(0)(11) * in_t()(1)(2)
+                  + conjugate(       res()(0)( 2));
 
-      res()(1)(2) = conjugate(triangle_t()(0)( 4)) * in_t()(0)(0)
-                  + conjugate(triangle_t()(0)( 8)) * in_t()(0)(1)
-                  + conjugate(triangle_t()(0)(11)) * in_t()(0)(2)
-                  + conjugate(triangle_t()(0)(13)) * in_t()(1)(0)
-                  + conjugate(triangle_t()(0)(14)) * in_t()(1)(1)
-                  +               diag_t()(0)( 5)  * in_t()(1)(2);
+      res()(1)(0) =           triangle_t()(0)( 2) * in_cc_0_0
+                  +           triangle_t()(0)( 6) * in_cc_0_1
+                  +           triangle_t()(0)( 9) * in_cc_0_2;
+      res()(1)(0) =               diag_t()(0)( 3) * in_t()(1)(0)
+                  +           triangle_t()(0)(12) * in_t()(1)(1)
+                  +           triangle_t()(0)(13) * in_t()(1)(2)
+                  + conjugate(       res()(1)( 0));
+
+      res()(1)(1) =           triangle_t()(0)( 3) * in_cc_0_0
+                  +           triangle_t()(0)( 7) * in_cc_0_1
+                  +           triangle_t()(0)(10) * in_cc_0_2
+                  +           triangle_t()(0)(12) * in_cc_1_0;
+      res()(1)(1) =               diag_t()(0)( 4) * in_t()(1)(1)
+                  +           triangle_t()(0)(14) * in_t()(1)(2)
+                  + conjugate(       res()(1)( 1));
+
+      res()(1)(2) =           triangle_t()(0)( 4) * in_cc_0_0
+                  +           triangle_t()(0)( 8) * in_cc_0_1
+                  +           triangle_t()(0)(11) * in_cc_0_2
+                  +           triangle_t()(0)(13) * in_cc_1_0
+                  +           triangle_t()(0)(14) * in_cc_1_1;
+      res()(1)(2) =               diag_t()(0)( 5) * in_t()(1)(2)
+                  + conjugate(        res()(1)( 2));
+
+      vstream(out_v[ss]()(0)(0), res()(0)(0));
+      vstream(out_v[ss]()(0)(1), res()(0)(1));
+      vstream(out_v[ss]()(0)(2), res()(0)(2));
+      vstream(out_v[ss]()(1)(0), res()(1)(0));
+      vstream(out_v[ss]()(1)(1), res()(1)(1));
+      vstream(out_v[ss]()(1)(2), res()(1)(2));
 
       // lower half
-      res()(2)(0) =               diag_t()(1)( 0)  * in_t()(2)(0)
-                  +           triangle_t()(1)( 0)  * in_t()(2)(1)
-                  +           triangle_t()(1)( 1)  * in_t()(2)(2)
-                  +           triangle_t()(1)( 2)  * in_t()(3)(0)
-                  +           triangle_t()(1)( 3)  * in_t()(3)(1)
-                  +           triangle_t()(1)( 4)  * in_t()(3)(2);
+      PREFETCH_CLOVER(1);
 
-      res()(2)(1) = conjugate(triangle_t()(1)( 0)) * in_t()(2)(0)
-                  +               diag_t()(1)( 1)  * in_t()(2)(1)
-                  +           triangle_t()(1)( 5)  * in_t()(2)(2)
-                  +           triangle_t()(1)( 6)  * in_t()(3)(0)
-                  +           triangle_t()(1)( 7)  * in_t()(3)(1)
-                  +           triangle_t()(1)( 8)  * in_t()(3)(2);
+      auto in_cc_2_0 = conjugate(in_t()(2)(0));
+      auto in_cc_2_1 = conjugate(in_t()(2)(1));
+      auto in_cc_2_2 = conjugate(in_t()(2)(2));
+      auto in_cc_3_0 = conjugate(in_t()(3)(0));
+      auto in_cc_3_1 = conjugate(in_t()(3)(1));
 
-      res()(2)(2) = conjugate(triangle_t()(1)( 1)) * in_t()(2)(0)
-                  + conjugate(triangle_t()(1)( 5)) * in_t()(2)(1)
-                  +               diag_t()(1)( 2)  * in_t()(2)(2)
-                  +           triangle_t()(1)( 9)  * in_t()(3)(0)
-                  +           triangle_t()(1)(10)  * in_t()(3)(1)
-                  +           triangle_t()(1)(11)  * in_t()(3)(2);
+      res()(2)(0) =               diag_t()(1)( 0) * in_t()(2)(0)
+                  +           triangle_t()(1)( 0) * in_t()(2)(1)
+                  +           triangle_t()(1)( 1) * in_t()(2)(2)
+                  +           triangle_t()(1)( 2) * in_t()(3)(0)
+                  +           triangle_t()(1)( 3) * in_t()(3)(1)
+                  +           triangle_t()(1)( 4) * in_t()(3)(2);
 
-      res()(3)(0) = conjugate(triangle_t()(1)( 2)) * in_t()(2)(0)
-                  + conjugate(triangle_t()(1)( 6)) * in_t()(2)(1)
-                  + conjugate(triangle_t()(1)( 9)) * in_t()(2)(2)
-                  +               diag_t()(1)( 3)  * in_t()(3)(0)
-                  +           triangle_t()(1)(12)  * in_t()(3)(1)
-                  +           triangle_t()(1)(13)  * in_t()(3)(2);
+      res()(2)(1) =           triangle_t()(1)( 0) * in_cc_2_0;
+      res()(2)(1) =               diag_t()(1)( 1) * in_t()(2)(1)
+                  +           triangle_t()(1)( 5) * in_t()(2)(2)
+                  +           triangle_t()(1)( 6) * in_t()(3)(0)
+                  +           triangle_t()(1)( 7) * in_t()(3)(1)
+                  +           triangle_t()(1)( 8) * in_t()(3)(2)
+                  + conjugate(       res()(2)( 1));
 
-      res()(3)(1) = conjugate(triangle_t()(1)( 3)) * in_t()(2)(0)
-                  + conjugate(triangle_t()(1)( 7)) * in_t()(2)(1)
-                  + conjugate(triangle_t()(1)(10)) * in_t()(2)(2)
-                  + conjugate(triangle_t()(1)(12)) * in_t()(3)(0)
-                  +               diag_t()(1)( 4)  * in_t()(3)(1)
-                  +           triangle_t()(1)(14)  * in_t()(3)(2);
+      res()(2)(2) =           triangle_t()(1)( 1) * in_cc_2_0
+                  +           triangle_t()(1)( 5) * in_cc_2_1;
+      res()(2)(2) =               diag_t()(1)( 2) * in_t()(2)(2)
+                  +           triangle_t()(1)( 9) * in_t()(3)(0)
+                  +           triangle_t()(1)(10) * in_t()(3)(1)
+                  +           triangle_t()(1)(11) * in_t()(3)(2)
+                  + conjugate(       res()(2)( 2));
 
-      res()(3)(2) = conjugate(triangle_t()(1)( 4)) * in_t()(2)(0)
-                  + conjugate(triangle_t()(1)( 8)) * in_t()(2)(1)
-                  + conjugate(triangle_t()(1)(11)) * in_t()(2)(2)
-                  + conjugate(triangle_t()(1)(13)) * in_t()(3)(0)
-                  + conjugate(triangle_t()(1)(14)) * in_t()(3)(1)
-                  +               diag_t()(1)( 5)  * in_t()(3)(2);
-      vstream(out_v[ss], res);
+      res()(3)(0) =           triangle_t()(1)( 2) * in_cc_2_0
+                  +           triangle_t()(1)( 6) * in_cc_2_1
+                  +           triangle_t()(1)( 9) * in_cc_2_2;
+      res()(3)(0) =               diag_t()(1)( 3) * in_t()(3)(0)
+                  +           triangle_t()(1)(12) * in_t()(3)(1)
+                  +           triangle_t()(1)(13) * in_t()(3)(2)
+                  + conjugate(       res()(3)( 0));
+
+      res()(3)(1) =           triangle_t()(1)( 3) * in_cc_2_0
+                  +           triangle_t()(1)( 7) * in_cc_2_1
+                  +           triangle_t()(1)(10) * in_cc_2_2
+                  +           triangle_t()(1)(12) * in_cc_3_0;
+      res()(3)(1) =               diag_t()(1)( 4) * in_t()(3)(1)
+                  +           triangle_t()(1)(14) * in_t()(3)(2)
+                  + conjugate(       res()(3)( 1));
+
+      res()(3)(2) =           triangle_t()(1)( 4) * in_cc_2_0
+                  +           triangle_t()(1)( 8) * in_cc_2_1
+                  +           triangle_t()(1)(11) * in_cc_2_2
+                  +           triangle_t()(1)(13) * in_cc_3_0
+                  +           triangle_t()(1)(14) * in_cc_3_1;
+      res()(3)(2) =               diag_t()(1)( 5) * in_t()(3)(2)
+                  + conjugate(       res()(3)( 2));
+
+      vstream(out_v[ss]()(2)(0), res()(2)(0));
+      vstream(out_v[ss]()(2)(1), res()(2)(1));
+      vstream(out_v[ss]()(2)(2), res()(2)(2));
+      vstream(out_v[ss]()(3)(0), res()(3)(0));
+      vstream(out_v[ss]()(3)(1), res()(3)(1));
+      vstream(out_v[ss]()(3)(2), res()(3)(2));
     });
   }
 
