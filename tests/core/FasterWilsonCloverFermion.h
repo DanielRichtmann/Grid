@@ -219,18 +219,10 @@ public:
     conformable(diag->Grid(), in.Grid());
     conformable(triangle->Grid(), in.Grid());
 
-    MooeeKernel(in, out, *diag, *triangle);
-  }
-
-
-  void MooeeKernel(const FermionField&        in,
-                   FermionField&              out,
-                   const CloverDiagonalField& diag,
-                   const CloverTriangleField& triangle) {
     #if defined(GRID_CUDA) || defined(GRID_HIP)
-    MooeeKernel_gpu(in, out, diag, triangle);
+    MooeeKernel_gpu(in, out, *diag, *triangle);
     #else
-    MooeeKernel_cpu(in, out, diag, triangle);
+    MooeeKernel_cpu(in, out, *diag, *triangle);
     #endif
   }
 
