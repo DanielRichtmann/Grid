@@ -218,11 +218,11 @@ public:
                    FermionField&              out,
                    const CloverDiagonalField& diag,
                    const CloverTriangleField& triangle) {
-    // #if defined(GRID_CUDA) || defined(GRID_HIP)
+    #if defined(GRID_CUDA) || defined(GRID_HIP)
     MooeeKernel_gpu(in, out, diag, triangle);
-    // #else
-    //     MooeeKernel_cpu(in, out, diag, triangle);
-    // #endif
+    #else
+    MooeeKernel_cpu(in, out, diag, triangle);
+    #endif
   }
 
 
@@ -272,26 +272,98 @@ public:
     typedef SiteSpinor CalcSpinor;
     const uint64_t Nsite = diag.Grid()->oSites();
 
-    // TODO: Add CPU code
-    thread_for(ss, Nsite, Simd::Nsimd(), {
+    thread_for(ss, Nsite, {
       CalcSpinor res;
       CalcSpinor in_t = in_v[ss];
       auto diag_t = diag_v[ss];
       auto triangle_t = triangle_v[ss];
 
-      for(int block=0; block<Nhs; block++) {
-        int s_start = block*Nhs;
-        for(int i=0; i<Nred; i++) {
-          int si = s_start + i/Nc, ci = i%Nc;
-          res()(si)(ci) = diag_t()(block)(i) * in_t()(si)(ci);
-          for(int j=0; j<Nred; j++) {
-            if (j == i) continue;
-            int sj = s_start + j/Nc, cj = j%Nc;
-            res()(si)(ci) = res()(si)(ci)+ triangle_elem(triangle_t, block, i, j) * in_t()(sj)(cj);
-          };
-        };
-      };
-      coalescedWrite(out_v[ss], res);
+      // upper half
+      res()(0)(0) =               diag_t()(0)( 0)  * in_t()(0)(0)
+                  +           triangle_t()(0)( 0)  * in_t()(0)(1)
+                  +           triangle_t()(0)( 1)  * in_t()(0)(2)
+                  +           triangle_t()(0)( 2)  * in_t()(1)(0)
+                  +           triangle_t()(0)( 3)  * in_t()(1)(1)
+                  +           triangle_t()(0)( 4)  * in_t()(1)(2);
+
+      res()(0)(1) = conjugate(triangle_t()(0)( 0)) * in_t()(0)(0)
+                  +               diag_t()(0)( 1)  * in_t()(0)(1)
+                  +           triangle_t()(0)( 5)  * in_t()(0)(2)
+                  +           triangle_t()(0)( 6)  * in_t()(1)(0)
+                  +           triangle_t()(0)( 7)  * in_t()(1)(1)
+                  +           triangle_t()(0)( 8)  * in_t()(1)(2);
+
+      res()(0)(2) = conjugate(triangle_t()(0)( 1)) * in_t()(0)(0)
+                  + conjugate(triangle_t()(0)( 5)) * in_t()(0)(1)
+                  +               diag_t()(0)( 2)  * in_t()(0)(2)
+                  +           triangle_t()(0)( 9)  * in_t()(1)(0)
+                  +           triangle_t()(0)(10)  * in_t()(1)(1)
+                  +           triangle_t()(0)(11)  * in_t()(1)(2);
+
+      res()(1)(0) = conjugate(triangle_t()(0)( 2)) * in_t()(0)(0)
+                  + conjugate(triangle_t()(0)( 6)) * in_t()(0)(1)
+                  + conjugate(triangle_t()(0)( 9)) * in_t()(0)(2)
+                  +               diag_t()(0)( 3)  * in_t()(1)(0)
+                  +           triangle_t()(0)(12)  * in_t()(1)(1)
+                  +           triangle_t()(0)(13)  * in_t()(1)(2);
+
+      res()(1)(1) = conjugate(triangle_t()(0)( 3)) * in_t()(0)(0)
+                  + conjugate(triangle_t()(0)( 7)) * in_t()(0)(1)
+                  + conjugate(triangle_t()(0)(10)) * in_t()(0)(2)
+                  + conjugate(triangle_t()(0)(12)) * in_t()(1)(0)
+                  +               diag_t()(0)( 4)  * in_t()(1)(1)
+                  +           triangle_t()(0)(14)  * in_t()(1)(2);
+
+      res()(1)(2) = conjugate(triangle_t()(0)( 4)) * in_t()(0)(0)
+                  + conjugate(triangle_t()(0)( 8)) * in_t()(0)(1)
+                  + conjugate(triangle_t()(0)(11)) * in_t()(0)(2)
+                  + conjugate(triangle_t()(0)(13)) * in_t()(1)(0)
+                  + conjugate(triangle_t()(0)(14)) * in_t()(1)(1)
+                  +               diag_t()(0)( 5)  * in_t()(1)(2);
+
+      // lower half
+      res()(2)(0) =               diag_t()(1)( 0)  * in_t()(2)(0)
+                  +           triangle_t()(1)( 0)  * in_t()(2)(1)
+                  +           triangle_t()(1)( 1)  * in_t()(2)(2)
+                  +           triangle_t()(1)( 2)  * in_t()(3)(0)
+                  +           triangle_t()(1)( 3)  * in_t()(3)(1)
+                  +           triangle_t()(1)( 4)  * in_t()(3)(2);
+
+      res()(2)(1) = conjugate(triangle_t()(1)( 0)) * in_t()(2)(0)
+                  +               diag_t()(1)( 1)  * in_t()(2)(1)
+                  +           triangle_t()(1)( 5)  * in_t()(2)(2)
+                  +           triangle_t()(1)( 6)  * in_t()(3)(0)
+                  +           triangle_t()(1)( 7)  * in_t()(3)(1)
+                  +           triangle_t()(1)( 8)  * in_t()(3)(2);
+
+      res()(2)(2) = conjugate(triangle_t()(1)( 1)) * in_t()(2)(0)
+                  + conjugate(triangle_t()(1)( 5)) * in_t()(2)(1)
+                  +               diag_t()(1)( 2)  * in_t()(2)(2)
+                  +           triangle_t()(1)( 9)  * in_t()(3)(0)
+                  +           triangle_t()(1)(10)  * in_t()(3)(1)
+                  +           triangle_t()(1)(11)  * in_t()(3)(2);
+
+      res()(3)(0) = conjugate(triangle_t()(1)( 2)) * in_t()(2)(0)
+                  + conjugate(triangle_t()(1)( 6)) * in_t()(2)(1)
+                  + conjugate(triangle_t()(1)( 9)) * in_t()(2)(2)
+                  +               diag_t()(1)( 3)  * in_t()(3)(0)
+                  +           triangle_t()(1)(12)  * in_t()(3)(1)
+                  +           triangle_t()(1)(13)  * in_t()(3)(2);
+
+      res()(3)(1) = conjugate(triangle_t()(1)( 3)) * in_t()(2)(0)
+                  + conjugate(triangle_t()(1)( 7)) * in_t()(2)(1)
+                  + conjugate(triangle_t()(1)(10)) * in_t()(2)(2)
+                  + conjugate(triangle_t()(1)(12)) * in_t()(3)(0)
+                  +               diag_t()(1)( 4)  * in_t()(3)(1)
+                  +           triangle_t()(1)(14)  * in_t()(3)(2);
+
+      res()(3)(2) = conjugate(triangle_t()(1)( 4)) * in_t()(2)(0)
+                  + conjugate(triangle_t()(1)( 8)) * in_t()(2)(1)
+                  + conjugate(triangle_t()(1)(11)) * in_t()(2)(2)
+                  + conjugate(triangle_t()(1)(13)) * in_t()(3)(0)
+                  + conjugate(triangle_t()(1)(14)) * in_t()(3)(1)
+                  +               diag_t()(1)( 5)  * in_t()(3)(2);
+      vstream(out_v[ss], res);
     });
   }
 
