@@ -106,6 +106,8 @@ public:
   CloverTermFast(WilsonCloverFermion<Impl>& clover_full)
     : clov_diag(clover_full.GaugeGrid())
     , clov_triang(clover_full.GaugeGrid())
+    , pf_dist_L1(-1)
+    , pf_dist_L2(-1)
   {
     convert_clover(clover_full.CloverTerm, clov_diag, clov_triang);
   }
@@ -161,65 +163,116 @@ public:
     });
   }
 
+  // Nils: 1 PF = 4 CL = 6 SR = 256 B
+  // -> need 6 PF to prefetch 21 CL for the data within a block
+
 #if defined(A64FX) || defined(A64FXFIXEDSIZE)
-#define PREFETCH_DIAGONAL(BASE) {                       \
-    uint64_t base;                                      \
-    int pf_dist_L1 = 1;                                 \
-    int pf_dist_L2 = -5; /* -> penalty -> disable */    \
-                                                        \
-    if ((pf_dist_L1 >= 0) && (ss + pf_dist_L1 < Nsite)) {               \
-      base = (uint64_t)&clov_diag_t()(pf_dist_L1+BASE)(0);              \
-      svprfd(svptrue_b64(), (int64_t*)(base +    0), SV_PLDL1STRM);     \
-      svprfd(svptrue_b64(), (int64_t*)(base +  256), SV_PLDL1STRM);     \
-      svprfd(svptrue_b64(), (int64_t*)(base +  512), SV_PLDL1STRM);     \
-      svprfd(svptrue_b64(), (int64_t*)(base +  768), SV_PLDL1STRM);     \
-      svprfd(svptrue_b64(), (int64_t*)(base + 1024), SV_PLDL1STRM);     \
-      svprfd(svptrue_b64(), (int64_t*)(base + 1280), SV_PLDL1STRM);     \
-    }                                                                   \
-                                                                        \
-    if ((pf_dist_L2 >= 0) && (ss + pf_dist_L2 < Nsite)) {               \
-      base = (uint64_t)&clov_diag_t()(pf_dist_L2+BASE)(0);              \
-      svprfd(svptrue_b64(), (int64_t*)(base +    0), SV_PLDL2STRM);     \
-      svprfd(svptrue_b64(), (int64_t*)(base +  256), SV_PLDL2STRM);     \
-      svprfd(svptrue_b64(), (int64_t*)(base +  512), SV_PLDL2STRM);     \
-      svprfd(svptrue_b64(), (int64_t*)(base +  768), SV_PLDL2STRM);     \
-      svprfd(svptrue_b64(), (int64_t*)(base + 1024), SV_PLDL2STRM);     \
-      svprfd(svptrue_b64(), (int64_t*)(base + 1280), SV_PLDL2STRM);     \
-    }                                                                   \
+#define PREFETCH_DIAGONAL(BASE) {                                          \
+    uint64_t base_diag;                                                    \
+    uint64_t base_triang;                                                  \
+    const int pf_bytes = 256;
+                                                                           \
+    if ((pf_dist_L1 >= 0) && (ss + pf_dist_L1 < Nsite)) {                  \
+      base_diag   = (uint64_t)  &clov_diag_t()(pf_dist_L1+BASE)(0);        \
+      base_triang = (uint64_t)&clov_triang_t()(pf_dist_L1+BASE)(0);        \
+      for(int i=0; i<uiae; i+=pf_bytes) {
+        svprfd(svptrue_b64(), (int64_t*)(base_diag   + i), SV_PLDL1STRM); \
+      }
+      for(int i=0; i<uiae; i+=pf_bytes) {
+        svprfd(svptrue_b64(), (int64_t*)(base_triang + i), SV_PLDL1STRM); \
+      }
+      svprfd(svptrue_b64(), (int64_t*)(base_diag   +    0), SV_PLDL1STRM); \
+      svprfd(svptrue_b64(), (int64_t*)(base_diag   +  256), SV_PLDL1STRM); \
+      svprfd(svptrue_b64(), (int64_t*)(base_diag   +  512), SV_PLDL1STRM); \
+      svprfd(svptrue_b64(), (int64_t*)(base_diag   +  768), SV_PLDL1STRM); \
+      svprfd(svptrue_b64(), (int64_t*)(base_diag   + 1024), SV_PLDL1STRM); \
+      svprfd(svptrue_b64(), (int64_t*)(base_diag   + 1280), SV_PLDL1STRM); \
+      /*svprfd(svptrue_b64(), (int64_t*)(base_triang +    0), SV_PLDL1STRM); \
+      svprfd(svptrue_b64(), (int64_t*)(base_triang +  256), SV_PLDL1STRM); \
+      svprfd(svptrue_b64(), (int64_t*)(base_triang +  512), SV_PLDL1STRM); \
+      svprfd(svptrue_b64(), (int64_t*)(base_triang +  768), SV_PLDL1STRM); */ \
+    }                                                                      \
+                                                                           \
+    if ((pf_dist_L2 >= 0) && (ss + pf_dist_L2 < Nsite)) {                  \
+      base_diag   = (uint64_t)  &clov_diag_t()(pf_dist_L2+BASE)(0);        \
+      base_triang = (uint64_t)&clov_triang_t()(pf_dist_L2+BASE)(0);        \
+      svprfd(svptrue_b64(), (int64_t*)(base_diag   +    0), SV_PLDL2STRM); \
+      svprfd(svptrue_b64(), (int64_t*)(base_diag   +  256), SV_PLDL2STRM); \
+      svprfd(svptrue_b64(), (int64_t*)(base_diag   +  512), SV_PLDL2STRM); \
+      svprfd(svptrue_b64(), (int64_t*)(base_diag   +  768), SV_PLDL2STRM); \
+      svprfd(svptrue_b64(), (int64_t*)(base_diag   + 1024), SV_PLDL2STRM); \
+      svprfd(svptrue_b64(), (int64_t*)(base_diag   + 1280), SV_PLDL2STRM); \
+      /*svprfd(svptrue_b64(), (int64_t*)(base_triang +    0), SV_PLDL2STRM); \
+      svprfd(svptrue_b64(), (int64_t*)(base_triang +  256), SV_PLDL2STRM); \
+      svprfd(svptrue_b64(), (int64_t*)(base_triang +  512), SV_PLDL2STRM); \
+      svprfd(svptrue_b64(), (int64_t*)(base_triang +  768), SV_PLDL2STRM); */ \
+    }                                                                      \
   }
-// // NOTE: Played around with this but doesn't bring anything
-// #elif defined(AVX512)
-// #define PREFETCH_DIAGONAL(BASE) {                       \
-//     uint64_t base;                                      \
-//     int pf_dist_L1 = 1;                                 \
-//     int pf_dist_L2 = +4;                                \
-//                                                         \
-//     if ((pf_dist_L1 >= 0) && (ss + pf_dist_L1 < Nsite)) {               \
-//       base = (uint64_t)&clov_diag_t()(pf_dist_L1+BASE)(0);              \
-//       _mm_prefetch((const char*)(base +    0), _MM_HINT_T0);            \
-//       _mm_prefetch((const char*)(base +   64), _MM_HINT_T0);            \
-//       _mm_prefetch((const char*)(base +  128), _MM_HINT_T0);            \
-//       _mm_prefetch((const char*)(base +  192), _MM_HINT_T0);            \
-//       _mm_prefetch((const char*)(base +  256), _MM_HINT_T0);            \
-//       _mm_prefetch((const char*)(base +  320), _MM_HINT_T0);            \
-//     }                                                                   \
-//                                                                         \
-//     if ((pf_dist_L2 >= 0) && (ss + pf_dist_L2 < Nsite)) {               \
-//       base = (uint64_t)&clov_diag_t()(pf_dist_L2+BASE)(0);              \
-//       _mm_prefetch((const char*)(base +    0), _MM_HINT_T1);            \
-//       _mm_prefetch((const char*)(base +   64), _MM_HINT_T1);            \
-//       _mm_prefetch((const char*)(base +  128), _MM_HINT_T1);            \
-//       _mm_prefetch((const char*)(base +  192), _MM_HINT_T1);            \
-//       _mm_prefetch((const char*)(base +  256), _MM_HINT_T1);            \
-//       _mm_prefetch((const char*)(base +  320), _MM_HINT_T1);            \
-//     }                                                                   \
-//   }
+// NOTE: Played around with this but doesn't bring anything
+#elif defined(AVX512)
+#define PREFETCH_DIAGONAL(BASE) {                                          \
+    uint64_t base_diag;                                                    \
+    uint64_t base_triang;                                                  \
+                                                                           \
+    if ((pf_dist_L1 >= 0) && (ss + pf_dist_L1 < Nsite)) {                  \
+      base_diag   = (uint64_t)  &clov_diag_t()(pf_dist_L1+BASE)(0);        \
+      base_triang = (uint64_t)&clov_triang_t()(pf_dist_L1+BASE)(0);        \
+      _mm_prefetch((const char*)(base_diag   +    0), _MM_HINT_T0);               \
+      _mm_prefetch((const char*)(base_diag   +   64), _MM_HINT_T0);               \
+      _mm_prefetch((const char*)(base_diag   +  128), _MM_HINT_T0);               \
+      _mm_prefetch((const char*)(base_diag   +  192), _MM_HINT_T0);               \
+      _mm_prefetch((const char*)(base_diag   +  256), _MM_HINT_T0);               \
+      _mm_prefetch((const char*)(base_diag   +  320), _MM_HINT_T0);               \
+      _mm_prefetch((const char*)(base_triang +    0), _MM_HINT_T0);               \
+      _mm_prefetch((const char*)(base_triang +   64), _MM_HINT_T0);               \
+      _mm_prefetch((const char*)(base_triang +  128), _MM_HINT_T0);               \
+      _mm_prefetch((const char*)(base_triang +  192), _MM_HINT_T0);               \
+      _mm_prefetch((const char*)(base_triang +  256), _MM_HINT_T0);               \
+      _mm_prefetch((const char*)(base_triang +  320), _MM_HINT_T0);               \
+      _mm_prefetch((const char*)(base_triang +  384), _MM_HINT_T0);               \
+      _mm_prefetch((const char*)(base_triang +  448), _MM_HINT_T0);               \
+      _mm_prefetch((const char*)(base_triang +  512), _MM_HINT_T0);               \
+      _mm_prefetch((const char*)(base_triang +  576), _MM_HINT_T0);               \
+      _mm_prefetch((const char*)(base_triang +  640), _MM_HINT_T0);               \
+      _mm_prefetch((const char*)(base_triang +  704), _MM_HINT_T0);               \
+      _mm_prefetch((const char*)(base_triang +  768), _MM_HINT_T0);               \
+      _mm_prefetch((const char*)(base_triang +  832), _MM_HINT_T0);               \
+      _mm_prefetch((const char*)(base_triang +  896), _MM_HINT_T0);               \
+    }                                                                      \
+                                                                           \
+    if ((pf_dist_L2 >= 0) && (ss + pf_dist_L2 < Nsite)) {                  \
+      base_diag   = (uint64_t)  &clov_diag_t()(pf_dist_L2+BASE)(0);        \
+      base_triang = (uint64_t)&clov_triang_t()(pf_dist_L2+BASE)(0);        \
+      _mm_prefetch((const char*)(base_diag   +    0), _MM_HINT_T1);               \
+      _mm_prefetch((const char*)(base_diag   +   64), _MM_HINT_T1);               \
+      _mm_prefetch((const char*)(base_diag   +  128), _MM_HINT_T1);               \
+      _mm_prefetch((const char*)(base_diag   +  192), _MM_HINT_T1);               \
+      _mm_prefetch((const char*)(base_diag   +  256), _MM_HINT_T1);               \
+      _mm_prefetch((const char*)(base_diag   +  320), _MM_HINT_T1);               \
+      _mm_prefetch((const char*)(base_triang +    0), _MM_HINT_T1);               \
+      _mm_prefetch((const char*)(base_triang +   64), _MM_HINT_T1);               \
+      _mm_prefetch((const char*)(base_triang +  128), _MM_HINT_T1);               \
+      _mm_prefetch((const char*)(base_triang +  192), _MM_HINT_T1);               \
+      _mm_prefetch((const char*)(base_triang +  256), _MM_HINT_T1);               \
+      _mm_prefetch((const char*)(base_triang +  320), _MM_HINT_T1);               \
+      _mm_prefetch((const char*)(base_triang +  384), _MM_HINT_T1);               \
+      _mm_prefetch((const char*)(base_triang +  448), _MM_HINT_T1);               \
+      _mm_prefetch((const char*)(base_triang +  512), _MM_HINT_T1);               \
+      _mm_prefetch((const char*)(base_triang +  576), _MM_HINT_T1);               \
+      _mm_prefetch((const char*)(base_triang +  640), _MM_HINT_T1);               \
+      _mm_prefetch((const char*)(base_triang +  704), _MM_HINT_T1);               \
+      _mm_prefetch((const char*)(base_triang +  768), _MM_HINT_T1);               \
+      _mm_prefetch((const char*)(base_triang +  832), _MM_HINT_T1);               \
+      _mm_prefetch((const char*)(base_triang +  896), _MM_HINT_T1);               \
+    }                                                                      \
+  }
 #else
 #define PREFETCH_DIAGONAL(BASE)
 #endif
 
-  // same as Mooee_handunrolled_withsplit_withstream in other file
-  void Mooee_cpu(const FermionField& in, FermionField& out) {
+    // same as Mooee_handunrolled_withsplit_withstream in other file
+    void
+    Mooee_cpu(const FermionField& in, FermionField& out) {
     conformable(in.Grid(), out.Grid());
     conformable(clov_diag.Grid(), in.Grid());
     conformable(clov_diag.Grid(), clov_triang.Grid());
@@ -373,6 +426,10 @@ private:
   CloverDiagonalField clov_diag;
   CloverTriangleField clov_triang;
   static constexpr int Nred = Nc * Nhs;
+
+public:
+
+  int pf_dist_L1, pf_dist_L2;
 };
 
 
@@ -448,17 +505,13 @@ void runBenchmark(int* argc, char*** argv) {
   implParams.boundary_phases = boundary_phases;
   WilsonAnisotropyCoefficients anisParams;
 
-  // setup fermion operators
-  double t_a = usecond();
-  WilsonCloverOperator Dwc(Umu, *UGrid, *UrbGrid, 0.5, 1.0, 1.0, anisParams, implParams);
-  double t_b = usecond();
-  CloverTermFast<WImpl> Dwc_fast(Dwc);
-  double t_c = usecond();
-  grid_printf("Clover term setup times: reference %f s, improved %f s\n", (t_b-t_a)/1e6, (t_c-t_b)/1e6);
-
   // misc stuff needed for benchmarks
   const int nIter = readFromCommandLineInt(argc, argv, "--niter", 1000);
   double volume=1.0; for(int mu=0; mu<Nd; mu++) volume*=UGrid->_fdimensions[mu];
+
+  // setup fermion operators
+  WilsonCloverOperator  Dwc(Umu, *UGrid, *UrbGrid, 0.5, 1.0, 1.0, anisParams, implParams);
+  CloverTermFast<WImpl> Dwc_fast(Dwc);
 
   // warmup + measure dhop
   grid_printf("hop warmup %s\n", precision.c_str()); fflush(stdout);
@@ -478,30 +531,18 @@ void runBenchmark(int* argc, char*** argv) {
   double t3 = usecond();
   double secs_ref = (t3-t2)/1e6;
 
-  // warmup + measure improved clover
-  grid_printf("improved warmup %s\n", precision.c_str()); fflush(stdout);
-  for(auto n : {1, 2, 3, 4, 5}) Dwc_fast.Mooee(src, res);
-  grid_printf("improved measurement %s\n", precision.c_str()); fflush(stdout);
-  double t4 = usecond();
-  for(int n = 0; n < nIter; n++) Dwc_fast.Mooee(src, res);
-  double t5 = usecond();
-#if !(defined(GRID_CUDA)||defined(GRID_HIP)) // TODO Juron doing bullshit -> remove again for booster
-  assert(resultsAgree(ref, res, "improved"));
-#endif
-  double secs_res = (t5-t4)/1e6;
-
   // performance per site (use minimal values necessary)
-  double hop_flop_per_site = 1320; // Rich's Talk + what Peter uses
-  double hop_byte_per_site = (8 * 9 + 9 * 12) * 2 * getPrecision<vCoeff_t>::value * 4;
-  double clov_flop_per_site = 504; // Rich's Talk and 1412.2629
-  double clov_byte_per_site = (2 * 18 + 12 + 12) * 2 * getPrecision<vCoeff_t>::value * 4;
+  double hop_flop_per_site            = 1320; // Rich's Talk + what Peter uses
+  double hop_byte_per_site            = (8 * 9 + 9 * 12) * 2 * getPrecision<vCoeff_t>::value * 4;
+  double clov_flop_per_site           = 504; // Rich's Talk and 1412.2629
+  double clov_byte_per_site           = (2 * 18 + 12 + 12) * 2 * getPrecision<vCoeff_t>::value * 4;
   double clov_byte_per_site_performed = (12 * 12 + 12 + 12) * 2 * getPrecision<vCoeff_t>::value * 4;
 
   // total performance numbers
-  double hop_gflop_total = volume * nIter * hop_flop_per_site / 1e9;
-  double hop_gbyte_total = volume * nIter * hop_byte_per_site / 1e9;
-  double clov_gflop_total = volume * nIter * clov_flop_per_site / 1e9;
-  double clov_gbyte_total = volume * nIter * clov_byte_per_site / 1e9;
+  double hop_gflop_total            = volume * nIter * hop_flop_per_site / 1e9;
+  double hop_gbyte_total            = volume * nIter * hop_byte_per_site / 1e9;
+  double clov_gflop_total           = volume * nIter * clov_flop_per_site / 1e9;
+  double clov_gbyte_total           = volume * nIter * clov_byte_per_site / 1e9;
   double clov_gbyte_performed_total = volume * nIter * clov_byte_per_site_performed / 1e9;
 
   // output
@@ -509,12 +550,49 @@ void runBenchmark(int* argc, char*** argv) {
               "hop", precision.c_str(), secs_hop, hop_gflop_total/secs_hop, hop_gbyte_total/secs_hop, secs_ref/secs_hop, secs_hop/secs_hop);
   grid_printf("Performance(%35s, %s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n",
               "reference", precision.c_str(), secs_ref, clov_gflop_total/secs_ref, clov_gbyte_total/secs_ref, secs_ref/secs_ref, secs_ref/secs_hop);
-  grid_printf("Performance(%35s, %s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n",
-              "improved", precision.c_str(), secs_res, clov_gflop_total/secs_res, clov_gbyte_total/secs_res, secs_ref/secs_res, secs_res/secs_hop);
 
   // just so we see how well the ET performs in terms of traffic
   grid_printf("Performance(%35s, %s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n",
               "reference_performed", precision.c_str(), secs_ref, clov_gflop_total/secs_ref, clov_gbyte_performed_total/secs_ref, secs_ref/secs_ref, secs_ref/secs_hop);
+
+#if defined(SCAN_RANGE)
+  // read maximum pf distances from command line
+  const int max_pf_dist_L1 = readFromCommandLineInt(argc, argv, "--max_pf_dist_L1", 5);
+  const int max_pf_dist_L2 = readFromCommandLineInt(argc, argv, "--max_pf_dist_L2", 10);
+
+  // loop over pf distances
+  for(int pf_dist_L1=-1;         pf_dist_L1<=max_pf_dist_L1; pf_dist_L1++) {
+  for(int pf_dist_L2=pf_dist_L1; pf_dist_L2<=max_pf_dist_L2; pf_dist_L2++) {
+#else
+  // read pf distances from command line
+  const int pf_dist_L1 = readFromCommandLineInt(argc, argv, "--pf_dist_L1", -1);
+  const int pf_dist_L2 = readFromCommandLineInt(argc, argv, "--pf_dist_L2", -1);
+#endif
+
+  // set pf distances
+  Dwc_fast.pf_dist_L1 = pf_dist_L1;
+  Dwc_fast.pf_dist_L2 = pf_dist_L2;
+
+  // construct name
+  auto name = "improved_" + std::to_string(pf_dist_L1) + "_" + std::to_string(pf_dist_L2);
+
+  // warmup + measure improved clover
+  grid_printf("%s warmup %s\n", name.c_str(), precision.c_str()); fflush(stdout);
+  for(auto n : {1, 2, 3, 4, 5}) Dwc_fast.Mooee(src, res);
+  grid_printf("%s measurement %s\n", name.c_str(), precision.c_str()); fflush(stdout);
+  double t4 = usecond();
+  for(int n = 0; n < nIter; n++) Dwc_fast.Mooee(src, res);
+  double t5 = usecond();
+  assert(resultsAgree(ref, res, name.c_str()));
+  double secs_res = (t5-t4)/1e6;
+
+  // report
+  grid_printf("Performance(%35s, %s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n",
+              name.c_str(), precision.c_str(), secs_res, clov_gflop_total/secs_res, clov_gbyte_total/secs_res, secs_ref/secs_res, secs_res/secs_hop);
+
+#if defined(SCAN_RANGE)
+  }}
+#endif
 
   grid_printf("finalize %s\n", precision.c_str()); fflush(stdout);
 }
