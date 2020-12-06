@@ -104,18 +104,12 @@ public:
                             const WilsonAnisotropyCoefficients& clover_anisotropy = WilsonAnisotropyCoefficients(),
                             const ImplParams& impl_p = ImplParams())
     : WilsonCloverFermion<Impl>(_Umu, Fgrid, Hgrid, _mass, _csw_r, _csw_t, clover_anisotropy, impl_p)
-    , Diag(&Fgrid),           Triangle(&Fgrid)
-    , DiagEven(&Hgrid),       TriangleEven(&Hgrid)
-    , DiagOdd(&Hgrid),        TriangleOdd(&Hgrid)
-    , DiagInv(&Fgrid),        TriangleInv(&Fgrid)
-    , DiagInvEven(&Hgrid),    TriangleInvEven(&Hgrid)
-    , DiagInvOdd(&Hgrid),     TriangleInvOdd(&Hgrid)
-    , DiagDag(&Fgrid),        TriangleDag(&Fgrid)
-    , DiagDagEven(&Hgrid),    TriangleDagEven(&Hgrid)
-    , DiagDagOdd(&Hgrid),     TriangleDagOdd(&Hgrid)
-    , DiagInvDag(&Fgrid),     TriangleInvDag(&Fgrid)
-    , DiagInvDagEven(&Hgrid), TriangleInvDagEven(&Hgrid)
-    , DiagInvDagOdd(&Hgrid),  TriangleInvDagOdd(&Hgrid)
+    , Diag(&Fgrid),        Triangle(&Fgrid)
+    , DiagEven(&Hgrid),    TriangleEven(&Hgrid)
+    , DiagOdd(&Hgrid),     TriangleOdd(&Hgrid)
+    , DiagInv(&Fgrid),     TriangleInv(&Fgrid)
+    , DiagInvEven(&Hgrid), TriangleInvEven(&Hgrid)
+    , DiagInvOdd(&Hgrid),  TriangleInvOdd(&Hgrid)
   {
     double t0 = usecond();
     convertLayout(this->CloverTerm, Diag, Triangle);
@@ -126,8 +120,8 @@ public:
     convertLayout(this->CloverTermInvEven, DiagInvEven, TriangleInvEven);
     convertLayout(this->CloverTermInvOdd, DiagInvOdd, TriangleInvOdd);
 
-    // TODO: optimally would like to set original fields to zero
-    // BUT:  not possible looking at lattice class
+    // TODO: set original clover fields to zero size
+    // BUT:  keep them around if we want to apply MDeriv
     double t1 = usecond();
     std::cout << GridLogMessage << "FasterWilsonCloverFermion: layout conversions took " << (t1-t0)/1e6 << " seconds" << std::endl;
   }
@@ -140,8 +134,8 @@ public:
     diag.Checkerboard()     = full.Checkerboard();
     triangle.Checkerboard() = full.Checkerboard();
 
-    autoView(full_v, full, AcceleratorRead);
-    autoView(diag_v, diag, AcceleratorWrite);
+    autoView(full_v,     full,     AcceleratorRead);
+    autoView(diag_v,     diag,     AcceleratorWrite);
     autoView(triangle_v, triangle, AcceleratorWrite);
 
     // NOTE: this function cannot be 'private' since nvcc forbids this for kernels
@@ -170,56 +164,62 @@ public:
   }
 
 
-  void MooeeInternal(const FermionField& in, FermionField& out, int dag, int inv) override {
-    conformable(in.Grid(), out.Grid());
-
-    assert(in.Checkerboard() == Odd || in.Checkerboard() == Even);
-    out.Checkerboard() = in.Checkerboard();
-
-    CloverDiagonalField* diag;
-    CloverTriangleField* triangle;
-
-    // decision making from original implementation
-    if(dag) {
-      if(in.Grid()->_isCheckerBoarded) {
-        if(in.Checkerboard() == Odd) {
-          diag     = (inv) ? &DiagInvDagOdd :     &DiagDagOdd;
-          triangle = (inv) ? &TriangleInvDagOdd : &TriangleDagOdd;
-        } else {
-          diag     = (inv) ? &DiagInvDagEven :     &DiagDagEven;
-          triangle = (inv) ? &TriangleInvDagEven : &TriangleDagEven;
-        }
+  void Mooee(const FermionField& in, FermionField& out) override {
+    if(in.Grid()->_isCheckerBoarded) {
+      if(in.Checkerboard() == Odd) {
+        MooeeInternalImpl(in, out, DiagOdd, TriangleOdd);
       } else {
-        diag     = (inv) ? &DiagInvDag :     &DiagDag;
-        triangle = (inv) ? &TriangleInvDag : &TriangleDag;
+        MooeeInternalImpl(in, out, DiagEven, TriangleEven);
       }
     } else {
-      if(in.Grid()->_isCheckerBoarded) {
-        if(in.Checkerboard() == Odd) {
-          diag     = (inv) ? &DiagInvOdd :     &DiagOdd;
-          triangle = (inv) ? &TriangleInvOdd : &TriangleOdd;
-        } else {
-          diag     = (inv) ? &DiagInvEven :     &DiagEven;
-          triangle = (inv) ? &TriangleInvEven : &TriangleEven;
-        }
-      } else {
-        diag     = (inv) ? &DiagInv :     &Diag;
-        triangle = (inv) ? &TriangleInv : &Triangle;
-      }
+      MooeeInternalImpl(in, out, Diag, Triangle);
     }
-
-    conformable(diag->Grid(), in.Grid());
-    conformable(triangle->Grid(), in.Grid());
-
-    #if defined(GRID_CUDA) || defined(GRID_HIP)
-    MooeeKernel_gpu(in, out, *diag, *triangle);
-    #else
-    MooeeKernel_cpu(in, out, *diag, *triangle);
-    #endif
   }
 
 
-  void MooeeKernel_gpu(const FermionField&        in,
+  void MooeeDag(const FermionField& in, FermionField& out) override {
+    Mooee(in, out); // blocks are hermitian
+  }
+
+
+  void MooeeInv(const FermionField& in, FermionField& out) override {
+    if(in.Grid()->_isCheckerBoarded) {
+      if(in.Checkerboard() == Odd) {
+        MooeeInternalImpl(in, out, DiagInvOdd, TriangleInvOdd);
+      } else {
+        MooeeInternalImpl(in, out, DiagInvEven, TriangleInvEven);
+      }
+    } else {
+      MooeeInternalImpl(in, out, DiagInv, TriangleInv);
+    }
+  }
+
+
+  void MooeeInvDag(const FermionField& in, FermionField& out) override {
+    MooeeInv(in, out); // blocks are hermitian
+  }
+
+
+  void MooeeInternalImpl(const FermionField&        in,
+                         FermionField&              out,
+                         const CloverDiagonalField& diag,
+                         const CloverTriangleField& triangle) {
+    assert(in.Checkerboard() == Odd || in.Checkerboard() == Even);
+    out.Checkerboard() = in.Checkerboard();
+    conformable(in.Grid(), out.Grid());
+    conformable(in.Grid(), diag.Grid());
+    conformable(in.Grid(), triangle.Grid());
+
+#if defined(GRID_CUDA) || defined(GRID_HIP)
+    MooeeKernel_gpu(in.oSites(), in, out, diag, triangle);
+#else
+    MooeeKernel_cpu(in.oSites(), in, out, diag, triangle);
+#endif
+  }
+
+
+  void MooeeKernel_gpu(int                        Nsite,
+                       const FermionField&        in,
                        FermionField&              out,
                        const CloverDiagonalField& diag,
                        const CloverTriangleField& triangle) {
@@ -229,7 +229,6 @@ public:
     autoView(out_v,      out,      AcceleratorWrite);
 
     typedef decltype(coalescedRead(out_v[0])) CalcSpinor;
-    const uint64_t Nsite = diag.Grid()->oSites();
 
     accelerator_for(ss, Nsite, Simd::Nsimd(), {
       CalcSpinor res;
@@ -253,7 +252,8 @@ public:
   }
 
 
-  void MooeeKernel_cpu(const FermionField&        in,
+  void MooeeKernel_cpu(int                        Nsite,
+                       const FermionField&        in,
                        FermionField&              out,
                        const CloverDiagonalField& diag,
                        const CloverTriangleField& triangle) {
@@ -263,7 +263,6 @@ public:
     autoView(out_v,      out,      CpuWrite);
 
     typedef SiteSpinor CalcSpinor;
-    const uint64_t Nsite = diag.Grid()->oSites();
 
 #if defined(A64FX) || defined(A64FXFIXEDSIZE)
 #define PREFETCH_CLOVER(BASE) {                                     \
@@ -473,6 +472,7 @@ private:
     }
   }
 
+
   accelerator_inline int triangle_index(int i, int j) {
     if(i == j)
       return 0;
@@ -488,15 +488,11 @@ private:
 
 private:
 
-  CloverDiagonalField Diag,       DiagEven,       DiagOdd;
-  CloverDiagonalField DiagInv,    DiagInvEven,    DiagInvOdd;
-  CloverDiagonalField DiagDag,    DiagDagEven,    DiagDagOdd;
-  CloverDiagonalField DiagInvDag, DiagInvDagEven, DiagInvDagOdd;
+  CloverDiagonalField Diag,    DiagEven,    DiagOdd;
+  CloverDiagonalField DiagInv, DiagInvEven, DiagInvOdd;
 
-  CloverTriangleField Triangle,       TriangleEven,       TriangleOdd;
-  CloverTriangleField TriangleInv,    TriangleInvEven,    TriangleInvOdd;
-  CloverTriangleField TriangleDag,    TriangleDagEven,    TriangleDagOdd;
-  CloverTriangleField TriangleInvDag, TriangleInvDagEven, TriangleInvDagOdd;
+  CloverTriangleField Triangle,    TriangleEven,    TriangleOdd;
+  CloverTriangleField TriangleInv, TriangleInvEven, TriangleInvOdd;
 };
 
 NAMESPACE_END(Grid);
