@@ -269,6 +269,69 @@ template<class l,class r> accelerator_inline
 }
 
 //////////////////////
+// Just for testing
+//////////////////////
+
+accelerator_inline ComplexD innerProductChiralityAwareD2(const ComplexF &l,const ComplexF &r){  return innerProductD2(l,r); }
+accelerator_inline ComplexD innerProductChiralityAwareD2(const ComplexD &l,const ComplexD &r){  return innerProductD2(l,r); }
+accelerator_inline RealD    innerProductChiralityAwareD2(const RealD    &l,const RealD    &r){  return innerProductD2(l,r); }
+accelerator_inline RealD    innerProductChiralityAwareD2(const RealF    &l,const RealF    &r){  return innerProductD2(l,r); }
+
+accelerator_inline vComplexD innerProductChiralityAwareD2(const vComplexD &l,const vComplexD &r){  return innerProductD2(l,r); }
+accelerator_inline vRealD    innerProductChiralityAwareD2(const vRealD    &l,const vRealD    &r){  return innerProductD2(l,r); }
+
+accelerator_inline vComplexD2 innerProductChiralityAwareD2(const vComplexF &l,const vComplexF &r){  return innerProductD2(l,r); }
+accelerator_inline vRealD2    innerProductChiralityAwareD2(const vRealF    &l,const vRealF    &r){  return innerProductD2(l,r); }
+
+// Now do it for vector, matrix, scalar
+// sfinae on spinor or coarsened
+template<class l,class r,int N,typename std::enable_if<N%2 == 0,void>::type* = nullptr> accelerator_inline
+  auto innerProductChiralityAwareD2 (const iVector<l,N>& lhs,const iVector<r,N>& rhs) -> iVector<decltype(innerProductChiralityAwareD2(lhs._internal[0],rhs._internal[0])), 2>
+{
+  typedef decltype(innerProductChiralityAwareD2(lhs._internal[0],rhs._internal[0])) ret_t;
+  iVector<ret_t, 2> ret;
+  zeroit(ret);
+  for(int c1=0;c1<N/2;c1++){
+    ret._internal[0] += innerProductChiralityAwareD2(lhs._internal[c1],rhs._internal[c1]);
+  }
+  for(int c1=N/2;c1<N;c1++){
+    ret._internal[1] += innerProductChiralityAwareD2(lhs._internal[c1],rhs._internal[c1]);
+  }
+  return ret;
+}
+template<class l,class r,int N,typename std::enable_if<N%2 != 0,void>::type* = nullptr> accelerator_inline
+  auto innerProductChiralityAwareD2 (const iVector<l,N>& lhs,const iVector<r,N>& rhs) -> iScalar<decltype(innerProductChiralityAwareD2(lhs._internal[0],rhs._internal[0]))>
+{
+  typedef decltype(innerProductChiralityAwareD2(lhs._internal[0],rhs._internal[0])) ret_t;
+  iScalar<ret_t> ret;
+  zeroit(ret);
+  for(int c1=0;c1<N;c1++){
+    ret._internal += innerProductChiralityAwareD2(lhs._internal[c1],rhs._internal[c1]);
+  }
+  return ret;
+}
+template<class l,class r,int N> accelerator_inline
+  auto innerProductChiralityAwareD2 (const iMatrix<l,N>& lhs,const iMatrix<r,N>& rhs) -> iScalar<decltype(innerProductChiralityAwareD2(lhs._internal[0][0],rhs._internal[0][0]))>
+{
+  typedef decltype(innerProductChiralityAwareD2(lhs._internal[0][0],rhs._internal[0][0])) ret_t;
+  iScalar<ret_t> ret;
+  ret=Zero();
+  for(int c1=0;c1<N;c1++){
+    for(int c2=0;c2<N;c2++){
+      ret._internal+=innerProductChiralityAwareD2(lhs._internal[c1][c2],rhs._internal[c1][c2]);
+    }}
+  return ret;
+}
+template<class l,class r> accelerator_inline
+  auto innerProductChiralityAwareD2 (const iScalar<l>& lhs,const iScalar<r>& rhs) -> iScalar<decltype(innerProductChiralityAwareD2(lhs._internal,rhs._internal))>
+{
+  typedef decltype(innerProductChiralityAwareD2(lhs._internal,rhs._internal)) ret_t;
+  iScalar<ret_t> ret;
+  ret._internal = innerProductChiralityAwareD2(lhs._internal,rhs._internal);
+  return ret;
+}
+
+//////////////////////
 // Keep same precison
 //////////////////////
 template<class l,class r,int N> accelerator_inline
