@@ -37,6 +37,24 @@ using namespace Grid;
 #endif
 
 
+template<typename Field>
+void performChiralDoubling(std::vector<Field>& basisVectors) {
+  assert(basisVectors.size()%2 == 0);
+  auto nb = basisVectors.size()/2;
+
+  for(int n=0; n<nb; n++) {
+    auto tmp1 = basisVectors[n];
+    auto tmp2 = tmp1;
+    G5C(tmp2, basisVectors[n]);
+    axpby(basisVectors[n], 0.5, 0.5, tmp1, tmp2);
+    axpby(basisVectors[n+nb], 0.5, -0.5, tmp1, tmp2);
+    std::cout << GridLogMessage << "Chirally doubled vector " << n << ". "
+              << "norm2(vec[" << n << "]) = " << norm2(basisVectors[n]) << ". "
+              << "norm2(vec[" << n+nb << "]) = " << norm2(basisVectors[n+nb]) << std::endl;
+  }
+}
+
+
 // needed below
 #define VECTOR_VIEW_OPEN(l,v,mode)				\
   Vector< decltype(l[0].View(mode)) > v; v.reserve(l.size());	\
@@ -181,49 +199,148 @@ accelerator_inline iScalar<vobj> getLowerIpElem(const iVector<iSinglet<vobj>, 2>
   return ret;
 }
 
+
 template<class vobj,class CComplex,int nbasis,class VLattice>
-inline void blockProjectChiralityAware(Lattice<iVector<CComplex,nbasis > > &coarse,
-			               const             Lattice<vobj>   &fine,
-			               const VLattice &Basis)
+inline void standardBlockProject(Lattice<iVector<CComplex, nbasis>>& coarseData,
+                                 const Lattice<vobj>&                fineData,
+                                 const VLattice&                     Basis)
+{
+  GridBase *fine   = fineData.Grid();
+  GridBase *coarse = coarseData.Grid();
+
+  int _ndimension = coarse->_ndimension;
+
+  // checks
+  assert(nbasis == Basis.size());
+  subdivides(coarse, fine);
+  for(int i = 0; i < nbasis; i++) {
+    conformable(Basis[i], fineData);
+  }
+
+  Coordinate block_r(_ndimension);
+  Coordinate fine_rdimensions   = fine->_rdimensions;
+  Coordinate coarse_rdimensions = coarse->_rdimensions;
+
+  size_t block_v = 1;
+  for(int d = 0; d < _ndimension; ++d) {
+    block_r[d] = fine->_rdimensions[d] / coarse->_rdimensions[d];
+    assert(block_r[d] * coarse->_rdimensions[d] == fine->_rdimensions[d]);
+    block_v *= block_r[d];
+  }
+  assert(block_v == fine->oSites() / coarse->oSites());
+
+  autoView(fineData_v, fineData, AcceleratorRead);
+  autoView(coarseData_v, coarseData, AcceleratorWrite);
+
+  typedef decltype(Basis[0].View(AcceleratorRead)) View;
+  Vector<View> Basis_v; Basis_v.reserve(Basis.size());
+  for(int i=0;i<Basis.size();i++){
+    Basis_v.push_back(Basis[i].View(AcceleratorRead));
+  }
+
+  accelerator_for(sci, nbasis * coarse->oSites(), vobj::Nsimd(), {
+    auto i  = sci % nbasis;
+    auto sc = sci / nbasis;
+
+    Coordinate coor_c(_ndimension);
+    Lexicographic::CoorFromIndex(coor_c, sc, coarse_rdimensions);
+
+    int sf;
+    decltype(innerProductD2(Basis_v[0](0), fineData_v(0))) reduce = Zero();
+
+    for(int sb = 0; sb < block_v; ++sb) {
+      Coordinate coor_b(_ndimension);
+      Coordinate coor_f(_ndimension);
+
+      Lexicographic::CoorFromIndex(coor_b, sb, block_r);
+      for(int d = 0; d < _ndimension; ++d) coor_f[d] = coor_c[d] * block_r[d] + coor_b[d];
+      Lexicographic::IndexFromCoor(coor_f, sf, fine_rdimensions);
+
+      reduce = reduce + innerProductD2(Basis_v[i](sf), fineData_v(sf));
+    }
+    convertType(coarseData_v[sc](i), TensorRemove(reduce));
+  });
+
+  for(int i=0;i<Basis.size();i++) Basis_v[i].ViewClose();
+}
+
+
+template<class vobj,class CComplex,int nbasis,class VLattice>
+inline void chiralBlockProject(Lattice<iVector<CComplex,nbasis > > &coarseData,
+			       const             Lattice<vobj>   &fineData,
+			       const VLattice &Basis)
 {
   static_assert(nbasis%2 == 0, "Wrong basis size");
-
   const int nchiralities = 2;
   const int nvectors = nbasis/nchiralities;
 
-  assert(Basis.size() == nvectors);
+  GridBase *fine   = fineData.Grid();
+  GridBase *coarse = coarseData.Grid();
 
-  GridBase *fine_grid   = fine.Grid();
-  GridBase *coarse_grid = coarse.Grid();
+  int _ndimension = coarse->_ndimension;
 
-  long coarse_osites = coarse_grid->oSites();
+  // checks
+  assert(nvectors == Basis.size());
+  subdivides(coarse, fine);
+  for(int i = 0; i < nvectors; i++) {
+    conformable(Basis[i], fineData);
+  }
 
-  assert(fine_grid->_ndimension == coarse_grid->_ndimension);
+  Coordinate block_r(_ndimension);
+  Coordinate fine_rdimensions   = fine->_rdimensions;
+  Coordinate coarse_rdimensions = coarse->_rdimensions;
 
-  autoView(fine_v,fine,AcceleratorRead);
-  autoView(coarse_v,coarse,AcceleratorWriteDiscard);
-  VECTOR_VIEW_OPEN(Basis,basis_v,AcceleratorRead);
+  size_t block_v = 1;
+  for(int d = 0; d < _ndimension; ++d) {
+    block_r[d] = fine->_rdimensions[d] / coarse->_rdimensions[d];
+    assert(block_r[d] * coarse->_rdimensions[d] == fine->_rdimensions[d]);
+    block_v *= block_r[d];
+  }
+  assert(block_v == fine->oSites() / coarse->oSites());
 
-  accelerator_for(_idx, nvectors*coarse_osites, vobj::Nsimd(), {
+  autoView(fineData_v, fineData, AcceleratorRead);
+  autoView(coarseData_v, coarseData, AcceleratorWrite);
+
+  typedef decltype(Basis[0].View(AcceleratorRead)) View;
+  Vector<View> Basis_v; Basis_v.reserve(Basis.size());
+  for(int i=0;i<Basis.size();i++){
+    Basis_v.push_back(Basis[i].View(AcceleratorRead));
+  }
+
+  long coarse_osites = coarse->oSites();
+
+  accelerator_for(_idx, nchiralities * nvectors * coarse_osites, vobj::Nsimd(), {
     auto idx       = _idx;
+    auto chirality = idx % nchiralities; idx  /= nchiralities;
     auto basis_i   = idx % nvectors;     idx  /= nvectors;
     auto sc        = idx % coarse_osites; idx /= coarse_osites;
 
-    decltype(innerProductChiralityAwareD2(basis_v[0](0), fine_v(0))) reduce = Zero();
+    Coordinate coor_c(_ndimension);
+    Lexicographic::CoorFromIndex(coor_c, sc, coarse_rdimensions);
 
-    // for(long j=0; j<sizes_v[sc]; ++j) {
-    //   long sf = lut_v[sc][j];
-    for(long j=0; j<1; ++j) {
-      long sf = j;
-      reduce = reduce + innerProductChiralityAwareD2(basis_v[basis_i](sf), fine_v(sf));
+    int sf;
+    decltype(innerProductLowerPartD2(Basis_v[0](0), fineData_v(0))) reduce = Zero();
+
+    auto coarse_i_offset = chirality * nvectors;
+
+    for(int sb = 0; sb < block_v; ++sb) {
+      Coordinate coor_b(_ndimension);
+      Coordinate coor_f(_ndimension);
+
+      Lexicographic::CoorFromIndex(coor_b, sb, block_r);
+      for(int d = 0; d < _ndimension; ++d) coor_f[d] = coor_c[d] * block_r[d] + coor_b[d];
+      Lexicographic::IndexFromCoor(coor_f, sf, fine_rdimensions);
+
+      if (chirality == 0)
+        reduce = reduce + innerProductUpperPartD2(Basis_v[basis_i](sf), fineData_v(sf));
+      else if (chirality == 1)
+        reduce = reduce + innerProductLowerPartD2(Basis_v[basis_i](sf), fineData_v(sf));
+      else
+        assert(0);
     }
-
-    convertType(coarse_v[sc](basis_i),            getUpperIpElem(reduce));
-    convertType(coarse_v[sc](basis_i + nvectors), getLowerIpElem(reduce));
+    convertType(coarseData_v[sc](coarse_i_offset + basis_i), TensorRemove(reduce));
   });
-  VECTOR_VIEW_CLOSE(basis_v);
-
-  std::cout << coarse_v[0] << std::endl;
+  for(int i=0;i<Basis.size();i++) Basis_v[i].ViewClose();
 }
 
 
@@ -233,7 +350,7 @@ void runBenchmark(int* argc, char*** argv) {
   static_assert(getPrecision<vCoeff_t>::value == 2 || getPrecision<vCoeff_t>::value == 1, "Incorrect precision"); // double or single
   std::string precision = (getPrecision<vCoeff_t>::value == 2 ? "double" : "single");
 
-  // Compile-time constants
+  // compile-time constants
   const int nbasis = NBASIS; static_assert((nbasis & 0x1) == 0, "");
   const int nsingle = nbasis/2;
 
@@ -242,7 +359,7 @@ void runBenchmark(int* argc, char*** argv) {
     SpaceTimeGrid::makeFourDimGrid(readFromCommandlineIvec(argc, argv, "--fgrid", {8, 8, 8, 8}),
                                    GridDefaultSimd(Nd, vCoeff_t::Nsimd()),
                                    GridDefaultMpi());
-  GridCartesian* UGgrid_c =
+  GridCartesian* UGrid_c =
     SpaceTimeGrid::makeFourDimGrid(readFromCommandlineIvec(argc, argv, "--cgrid", {4, 4, 4, 4}),
                                    GridDefaultSimd(Nd, vCoeff_t::Nsimd()),
                                    GridDefaultMpi());
@@ -256,103 +373,90 @@ void runBenchmark(int* argc, char*** argv) {
   typedef Lattice<iSpinColourVector<vCoeff_t>>                        FineVector;
   typedef Lattice<typename FineVector::vector_object::tensor_reduced> FineComplex;
   typedef Lattice<iVector<iSinglet<vCoeff_t>, nbasis>>                CoarseVector;
-  // typedef WilsonImpl<vCoeff_t, FundamentalRepresentation, CoeffReal> WImpl;
-  // typedef WilsonCloverFermion<WImpl> WilsonCloverOperator;
-  // typedef typename WilsonCloverOperator::FermionField Fermion;
-  // typedef typename WilsonCloverOperator::GaugeField Gauge;
 
   // setup fields
   FineVector src(UGrid_f); random(pRNG, src);
   FineVector ref(UGrid_f); ref = Zero();
-  CoarseVector res(UGrid_f); res = Zero();
-  FineVector diff(UGrid_f); diff = Zero();
-  std::vector<FineVector>   basis(nsingle, UGrid_f);
+  CoarseVector res_single(UGrid_c); res_single = Zero();
+  CoarseVector res_normal(UGrid_c); res_normal = Zero();
+  CoarseVector diff(UGrid_c); diff = Zero();
+  std::vector<FineVector>   basis_single(nsingle, UGrid_f);
+  std::vector<FineVector>   basis_normal(nbasis, UGrid_f);
 
   // randomize
-  for(auto& b : basis) gaussian(pRNG, b);
+  for(auto& b : basis_single) gaussian(pRNG, b);
   gaussian(pRNG, src);
 
   // randomize
-  for(int n=0; n<basis.size(); n++)
-    basis[n] = n+1;
-  src = 1.0;
-  // for(auto& b : basis) gaussian(pRNG, b);
-  // gaussian(pRNG, src);
+  for(int n=0; n<basis_single.size(); n++) {
+    basis_normal[n] = basis_single[n];
+  }
+  performChiralDoubling(basis_normal);
 
   // misc stuff needed for benchmarks
   const int nIter = readFromCommandLineInt(argc, argv, "--niter", 1000);
   double volume=1.0; for(int mu=0; mu<Nd; mu++) volume*=UGrid_f->_fdimensions[mu];
 
-  // testing
-  blockProjectChiralityAware(res, src, basis);
+  // warmup + measure standard
+  grid_printf("standard warmup %s\n", precision.c_str()); fflush(stdout);
+  for(auto n : {1, 2, 3, 4, 5}) standardBlockProject(res_normal, src, basis_normal);
+  grid_printf("standard measurement %s\n", precision.c_str()); fflush(stdout);
+  double t0 = usecond();
+  for(int n = 0; n < nIter; n++) standardBlockProject(res_normal, src, basis_normal);
+  double t1 = usecond();
+  double secs_standard = (t1-t0)/1e6;
 
-#if 0
-  // testing
-  {
-    autoView(src_v, src, CpuRead);
-    autoView(res_v, res, CpuWrite);
-    autoView(ref_v, ref, CpuWrite);
+  // warmup + measure chiral
+  grid_printf("chiral warmup %s\n", precision.c_str()); fflush(stdout);
+  for(auto n : {1, 2, 3, 4, 5}) chiralBlockProject(res_single, src, basis_single);
+  grid_printf("chiral measurement %s\n", precision.c_str()); fflush(stdout);
+  double t2 = usecond();
+  for(int n = 0; n < nIter; n++) chiralBlockProject(res_single, src, basis_single);
+  double t3 = usecond();
+  double secs_chiral = (t3-t2)/1e6;
 
-    auto src_t = src_v[0];
-    auto res_t = res_v[0];
-    auto ref_t = ref_v[0];
+  // ensure correctness
+  assert(resultsAgree(res_normal, res_single, "chiral"));
 
-    decltype(innerProductD2(src_v[0], src_v[0])) orig = Zero();
-    orig = orig + innerProductD2(src_v[0], src_v[0]);
-    char* dtype_orig = orig;
-    convertType(res_v[0](0), TensorRemove(orig));
+  // performance figures
+  double flops_per_cmul = 6;
+  double flops_per_cadd = 2;
+  double fine_complex   = Ns * Nc;
+  double fine_floats    = fine_complex * 2;
+  double coarse_complex = nbasis;
+  double coarse_floats  = coarse_complex * 2;
+  double flops_per_site = 1.0 * (fine_complex * flops_per_cmul + (fine_complex - 1) * flops_per_cadd) * nbasis;
+  double flops          = flops_per_site * UGrid_f->gSites() * nIter;
+  double prec_bytes     = getPrecision<vCoeff_t>::value * 4;
+  double nbytes         = (((nsingle + 1) * fine_floats) * UGrid_f->gSites()
+                        + coarse_floats * UGrid_c->gSites())
+                        * prec_bytes * nIter;
 
-    decltype(innerProductChiralityAwareD2(src_v[0], src_v[0])) test = Zero();
-    test = test + innerProductChiralityAwareD2(src_v[0], src_v[0]);
-    char* dtype_test = test;
-    // convertType(res_v[0](0), TensorRemove(test));
-    convertType(res_v[0](0), TensorRemove(test()(0)));
-    convertType(res_v[0](0), TensorRemove(test()(1)));
+  // report standard
+  double dt_standard           = (t1 - t0) / 1e6;
+  double GFlopsPerSec_standard = flops / dt_standard / 1e9;
+  double GBPerSec_standard     = nbytes / dt_standard / 1e9;
+  std::cout << GridLogMessage << nIter << " applications of standardblockProject" << std::endl;
+  std::cout << GridLogMessage << "    Time to complete            : " << dt_standard << " s" << std::endl;
+  std::cout << GridLogMessage << "    Total performance           : " << GFlopsPerSec_standard << " GFlops/s" << std::endl;
+  std::cout << GridLogMessage << "    Effective memory bandwidth  : " << GBPerSec_standard << " GB/s" << std::endl << std::endl;
 
-    // decltype(innerProductD2(basis_v[0](0), fine_v[0](0))) reduce = Zero();
-    // for (long fine_virtual_i=0; fine_virtual_i<fine_n_virtual; fine_virtual_i++) {
-    //   for(long j=0; j<sizes_v[sc]; ++j) {
-    //     long sf = lut_v[sc][j];
-    //     reduce = reduce + innerProductD2(basis_v[basis_i_rel*fine_n_virtual + fine_virtual_i](sf), fine_v[vec_i*fine_n_virtual + fine_virtual_i](sf));
-
-    // auto test = innerProductChiralityAwareD2(src_t, src_t);
-
-    // std::cout << orig << std::endl;
-  }
-
-  // performance per site (use minimal values necessary)
-  double hop_flop_per_site            = 1320; // Rich's Talk + what Peter uses
-  double hop_byte_per_site            = (8 * 9 + 9 * 12) * 2 * getPrecision<vCoeff_t>::value * 4;
-  double clov_flop_per_site           = 504; // Rich's Talk and 1412.2629
-  double clov_byte_per_site           = (2 * 18 + 12 + 12) * 2 * getPrecision<vCoeff_t>::value * 4;
-  double clov_byte_per_site_performed = (12 * 12 + 12 + 12) * 2 * getPrecision<vCoeff_t>::value * 4;
-
-  // total performance numbers
-  double hop_gflop_total            = volume * nIter * hop_flop_per_site / 1e9;
-  double hop_gbyte_total            = volume * nIter * hop_byte_per_site / 1e9;
-  double clov_gflop_total           = volume * nIter * clov_flop_per_site / 1e9;
-  double clov_gbyte_total           = volume * nIter * clov_byte_per_site / 1e9;
-  double clov_gbyte_performed_total = volume * nIter * clov_byte_per_site_performed / 1e9;
-
-  // output
-  grid_printf("Performance(%35s, %s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n",
-              "hop", precision.c_str(), secs_hop, hop_gflop_total/secs_hop, hop_gbyte_total/secs_hop, secs_ref/secs_hop, secs_hop/secs_hop);
-  grid_printf("Performance(%35s, %s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n",
-              "reference", precision.c_str(), secs_ref, clov_gflop_total/secs_ref, clov_gbyte_total/secs_ref, secs_ref/secs_ref, secs_ref/secs_hop);
-
-  // just so we see how well the ET performs in terms of traffic
-  grid_printf("Performance(%35s, %s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n",
-              "reference_performed", precision.c_str(), secs_ref, clov_gflop_total/secs_ref, clov_gbyte_performed_total/secs_ref, secs_ref/secs_ref, secs_ref/secs_hop);
-
+  // report chiral
+  double dt_chiral           = (t3 - t2) / 1e6;
+  double GFlopsPerSec_chiral = flops / dt_chiral / 1e9;
+  double GBPerSec_chiral     = nbytes / dt_chiral / 1e9;
+  std::cout << GridLogMessage << nIter << " applications of chiralblockProject" << std::endl;
+  std::cout << GridLogMessage << "    Time to complete            : " << dt_chiral << " s" << std::endl;
+  std::cout << GridLogMessage << "    Total performance           : " << GFlopsPerSec_chiral << " GFlops/s" << std::endl;
+  std::cout << GridLogMessage << "    Effective memory bandwidth  : " << GBPerSec_chiral << " GB/s" << std::endl << std::endl;
 
   grid_printf("finalize %s\n", precision.c_str()); fflush(stdout);
-#endif
 }
 
 int main(int argc, char** argv) {
   Grid_init(&argc, &argv);
 
-  // runBenchmark<vComplexD>(&argc, &argv);
+  runBenchmark<vComplexD>(&argc, &argv);
   runBenchmark<vComplexF>(&argc, &argv);
 
   Grid_finalize();

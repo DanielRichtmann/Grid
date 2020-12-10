@@ -332,6 +332,123 @@ template<class l,class r> accelerator_inline
 }
 
 //////////////////////
+// Just for testing (AGAIN)
+//////////////////////
+
+accelerator_inline ComplexD innerProductUpperPartD2(const ComplexF &l,const ComplexF &r){  return innerProductD2(l,r); }
+accelerator_inline ComplexD innerProductUpperPartD2(const ComplexD &l,const ComplexD &r){  return innerProductD2(l,r); }
+accelerator_inline RealD    innerProductUpperPartD2(const RealD    &l,const RealD    &r){  return innerProductD2(l,r); }
+accelerator_inline RealD    innerProductUpperPartD2(const RealF    &l,const RealF    &r){  return innerProductD2(l,r); }
+
+accelerator_inline vComplexD innerProductUpperPartD2(const vComplexD &l,const vComplexD &r){  return innerProductD2(l,r); }
+accelerator_inline vRealD    innerProductUpperPartD2(const vRealD    &l,const vRealD    &r){  return innerProductD2(l,r); }
+
+accelerator_inline vComplexD2 innerProductUpperPartD2(const vComplexF &l,const vComplexF &r){  return innerProductD2(l,r); }
+accelerator_inline vRealD2    innerProductUpperPartD2(const vRealF    &l,const vRealF    &r){  return innerProductD2(l,r); }
+
+// Now do it for vector, matrix, scalar
+// sfinae on spinor or coarsened
+template<class l,class r,int N,typename std::enable_if<N%2 == 0,void>::type* = nullptr> accelerator_inline
+  auto innerProductUpperPartD2 (const iVector<l,N>& lhs,const iVector<r,N>& rhs) -> iScalar<decltype(innerProductUpperPartD2(lhs._internal[0],rhs._internal[0]))>
+{
+  typedef decltype(innerProductUpperPartD2(lhs._internal[0],rhs._internal[0])) ret_t;
+  iScalar<ret_t> ret;
+  zeroit(ret);
+  constexpr int Nhalf=N/2;
+  for(int c1=0;c1<Nhalf;c1++){
+    ret._internal += innerProductUpperPartD2(lhs._internal[c1],rhs._internal[c1]);
+  }
+  return ret;
+}
+template<class l,class r,int N,typename std::enable_if<N%2 != 0,void>::type* = nullptr> accelerator_inline
+  auto innerProductUpperPartD2 (const iVector<l,N>& lhs,const iVector<r,N>& rhs) -> iScalar<decltype(innerProductUpperPartD2(lhs._internal[0],rhs._internal[0]))>
+{
+  typedef decltype(innerProductUpperPartD2(lhs._internal[0],rhs._internal[0])) ret_t;
+  iScalar<ret_t> ret;
+  zeroit(ret);
+  for(int c1=0;c1<N;c1++){
+    ret._internal += innerProductUpperPartD2(lhs._internal[c1],rhs._internal[c1]);
+  }
+  return ret;
+}
+template<class l,class r,int N> accelerator_inline
+  auto innerProductUpperPartD2 (const iMatrix<l,N>& lhs,const iMatrix<r,N>& rhs) -> iScalar<decltype(innerProductUpperPartD2(lhs._internal[0][0],rhs._internal[0][0]))>
+{
+  typedef decltype(innerProductUpperPartD2(lhs._internal[0][0],rhs._internal[0][0])) ret_t;
+  iScalar<ret_t> ret;
+  ret=Zero();
+  for(int c1=0;c1<N;c1++){
+    for(int c2=0;c2<N;c2++){
+      ret._internal+=innerProductUpperPartD2(lhs._internal[c1][c2],rhs._internal[c1][c2]);
+    }}
+  return ret;
+}
+template<class l,class r> accelerator_inline
+  auto innerProductUpperPartD2 (const iScalar<l>& lhs,const iScalar<r>& rhs) -> iScalar<decltype(innerProductUpperPartD2(lhs._internal,rhs._internal))>
+{
+  typedef decltype(innerProductUpperPartD2(lhs._internal,rhs._internal)) ret_t;
+  iScalar<ret_t> ret;
+  ret._internal = innerProductUpperPartD2(lhs._internal,rhs._internal);
+  return ret;
+}
+accelerator_inline ComplexD innerProductLowerPartD2(const ComplexF &l,const ComplexF &r){  return innerProductD2(l,r); }
+accelerator_inline ComplexD innerProductLowerPartD2(const ComplexD &l,const ComplexD &r){  return innerProductD2(l,r); }
+accelerator_inline RealD    innerProductLowerPartD2(const RealD    &l,const RealD    &r){  return innerProductD2(l,r); }
+accelerator_inline RealD    innerProductLowerPartD2(const RealF    &l,const RealF    &r){  return innerProductD2(l,r); }
+
+accelerator_inline vComplexD innerProductLowerPartD2(const vComplexD &l,const vComplexD &r){  return innerProductD2(l,r); }
+accelerator_inline vRealD    innerProductLowerPartD2(const vRealD    &l,const vRealD    &r){  return innerProductD2(l,r); }
+
+accelerator_inline vComplexD2 innerProductLowerPartD2(const vComplexF &l,const vComplexF &r){  return innerProductD2(l,r); }
+accelerator_inline vRealD2    innerProductLowerPartD2(const vRealF    &l,const vRealF    &r){  return innerProductD2(l,r); }
+
+// Now do it for vector, matrix, scalar
+// sfinae on spinor or coarsened
+template<class l,class r,int N,typename std::enable_if<N%2 == 0,void>::type* = nullptr> accelerator_inline
+  auto innerProductLowerPartD2 (const iVector<l,N>& lhs,const iVector<r,N>& rhs) -> iScalar<decltype(innerProductLowerPartD2(lhs._internal[0],rhs._internal[0]))>
+{
+  typedef decltype(innerProductLowerPartD2(lhs._internal[0],rhs._internal[0])) ret_t;
+  iScalar<ret_t> ret;
+  zeroit(ret);
+  constexpr int Nhalf=N/2;
+  for(int c1=Nhalf;c1<N;c1++){
+    ret._internal += innerProductLowerPartD2(lhs._internal[c1],rhs._internal[c1]);
+  }
+  return ret;
+}
+template<class l,class r,int N,typename std::enable_if<N%2 != 0,void>::type* = nullptr> accelerator_inline
+  auto innerProductLowerPartD2 (const iVector<l,N>& lhs,const iVector<r,N>& rhs) -> iScalar<decltype(innerProductLowerPartD2(lhs._internal[0],rhs._internal[0]))>
+{
+  typedef decltype(innerProductLowerPartD2(lhs._internal[0],rhs._internal[0])) ret_t;
+  iScalar<ret_t> ret;
+  zeroit(ret);
+  for(int c1=0;c1<N;c1++){
+    ret._internal += innerProductLowerPartD2(lhs._internal[c1],rhs._internal[c1]);
+  }
+  return ret;
+}
+template<class l,class r,int N> accelerator_inline
+  auto innerProductLowerPartD2 (const iMatrix<l,N>& lhs,const iMatrix<r,N>& rhs) -> iScalar<decltype(innerProductLowerPartD2(lhs._internal[0][0],rhs._internal[0][0]))>
+{
+  typedef decltype(innerProductLowerPartD2(lhs._internal[0][0],rhs._internal[0][0])) ret_t;
+  iScalar<ret_t> ret;
+  ret=Zero();
+  for(int c1=0;c1<N;c1++){
+    for(int c2=0;c2<N;c2++){
+      ret._internal+=innerProductLowerPartD2(lhs._internal[c1][c2],rhs._internal[c1][c2]);
+    }}
+  return ret;
+}
+template<class l,class r> accelerator_inline
+  auto innerProductLowerPartD2 (const iScalar<l>& lhs,const iScalar<r>& rhs) -> iScalar<decltype(innerProductLowerPartD2(lhs._internal,rhs._internal))>
+{
+  typedef decltype(innerProductLowerPartD2(lhs._internal,rhs._internal)) ret_t;
+  iScalar<ret_t> ret;
+  ret._internal = innerProductLowerPartD2(lhs._internal,rhs._internal);
+  return ret;
+}
+
+//////////////////////
 // Keep same precison
 //////////////////////
 template<class l,class r,int N> accelerator_inline
