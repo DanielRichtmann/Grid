@@ -207,6 +207,33 @@ void performChiralDoubling(std::vector<Field>& basisVectors) {
 }
 
 
+template<typename vobj, int nvectors>
+void fillProjector(const std::vector<Lattice<vobj>>& basisVectors, Lattice<iVector<vobj, nvectors>>& projector) {
+  assert(basisVectors.size() == nvectors);
+  for(int i=0; i<nvectors; i++) {conformable(basisVectors[i], projector);}
+
+  autoView(projector_v, projector, AcceleratorWrite);
+
+  typedef decltype(basisVectors[0].View(AcceleratorRead)) View;
+  Vector<View> basisVectors_v; basisVectors_v.reserve(basisVectors.size());
+  for(int i=0;i<basisVectors.size();i++){
+    basisVectors_v.push_back(basisVectors[i].View(AcceleratorRead));
+  }
+
+  GridBase* grid = projector.Grid();
+  long osites = grid->oSites();
+
+  accelerator_for(_idx, nvectors * osites, vobj::Nsimd(), {
+    auto idx      = _idx;
+    auto vector_i = idx % nvectors; idx /= nvectors;
+    auto ss       = idx % osites;   idx /= osites;
+    coalescedWrite(projector_v[ss](vector_i), basisVectors_v[vector_i](ss));
+  });
+
+  for(int i=0;i<basisVectors.size();i++) basisVectors_v[i].ViewClose();
+}
+
+
 // needed below
 #define VECTOR_VIEW_OPEN(l,v,mode)				\
   Vector< decltype(l[0].View(mode)) > v; v.reserve(l.size());	\
@@ -549,6 +576,58 @@ inline void blockProject_parchange_lut_chiral(Lattice<iVector<CComplex, nbasis>>
   });
   for(int i=0;i<Basis.size();i++) Basis_v[i].ViewClose();
 }
+
+
+template<class vobj,class CComplex,int nbasis,class ScalarField,typename std::enable_if<nbasis%2==0,void>::type* = nullptr>
+inline void blockProject_parchange_lut_chiral_fused(Lattice<iVector<CComplex, nbasis>>&     coarseData,
+                                                    const Lattice<vobj>&                    fineData,
+                                                    const Lattice<iVector<vobj, nbasis/2>>& projector,
+                                                    CoarseningLookupTable<ScalarField>&     lut)
+{
+  static_assert(nbasis%2 == 0, "Wrong basis size");
+  const int nchiralities = 2;
+  const int nvectors = nbasis/nchiralities;
+
+  GridBase *fine   = fineData.Grid();
+  GridBase *coarse = coarseData.Grid();
+
+  // checks
+  assert(fine->_ndimension == coarse->_ndimension);
+  conformable(projector, fineData);
+  assert(lut.gridsMatch(coarse, fine));
+
+  auto lut_v = lut.View();
+  auto sizes_v = lut.Sizes();
+  autoView(projector_v, projector, AcceleratorRead);
+  autoView(fineData_v, fineData, AcceleratorRead);
+  autoView(coarseData_v, coarseData, AcceleratorWrite);
+
+  long coarse_osites = coarse->oSites();
+
+  accelerator_for(_idx, nchiralities * nvectors * coarse_osites, vobj::Nsimd(), {
+    auto idx       = _idx;
+    auto chirality = idx % nchiralities; idx  /= nchiralities;
+    auto basis_i   = idx % nvectors;     idx  /= nvectors;
+    auto sc        = idx % coarse_osites; idx /= coarse_osites;
+
+    auto coarse_i_offset = chirality * nvectors;
+
+    decltype(innerProductLowerPartD2(coalescedRead(projector_v[0](0)), fineData_v(0))) reduce = Zero();
+
+    for(int j=0; j<sizes_v[sc]; ++j) {
+      int sf = lut_v[sc][j];
+      if (chirality == 0)
+        reduce = reduce + innerProductUpperPartD2(coalescedRead(projector_v[sf](basis_i)), fineData_v(sf));
+      else if (chirality == 1)
+        reduce = reduce + innerProductLowerPartD2(coalescedRead(projector_v[sf](basis_i)), fineData_v(sf));
+      else
+        assert(0);
+    }
+    convertType(coarseData_v[sc](coarse_i_offset + basis_i), TensorRemove(reduce));
+  });
+}
+
+
 template<typename vCoeff_t>
 void runBenchmark(int* argc, char*** argv) {
   // precision
@@ -582,6 +661,7 @@ void runBenchmark(int* argc, char*** argv) {
   typedef Lattice<iSpinColourVector<vCoeff_t>>                          FineVector;
   typedef Lattice<typename FineVector::vector_object::tensor_reduced>   FineComplex;
   typedef Lattice<iVector<iSinglet<vCoeff_t>, nbasis>>                  CoarseVector;
+  typedef Lattice<iVector<typename FineVector::vector_object, nsingle>> Projector;
 
   // setup fields
   FineVector src(UGrid_f); random(pRNG, src);
@@ -590,8 +670,10 @@ void runBenchmark(int* argc, char*** argv) {
   CoarseVector res_parchange_lut(UGrid_c); res_parchange_lut = Zero();
   CoarseVector res_parchange_chiral(UGrid_c); res_parchange_chiral = Zero();
   CoarseVector res_parchange_lut_chiral(UGrid_c); res_parchange_lut_chiral = Zero();
+  CoarseVector res_parchange_lut_chiral_fused(UGrid_c); res_parchange_lut_chiral_fused = Zero();
   std::vector<FineVector>   basis_single(nsingle, UGrid_f);
   std::vector<FineVector>   basis_normal(nbasis, UGrid_f);
+  Projector                 basis_fused(UGrid_f);
 
   // lookup table
   FineComplex mask_full(UGrid_f); mask_full = 1.;
@@ -606,6 +688,7 @@ void runBenchmark(int* argc, char*** argv) {
     basis_normal[n] = basis_single[n];
   }
   performChiralDoubling(basis_normal);
+  fillProjector(basis_single, basis_fused);
 
   // misc stuff needed for benchmarks
   const int nIter = readFromCommandLineInt(argc, argv, "--niter", 1000);
@@ -737,6 +820,28 @@ void runBenchmark(int* argc, char*** argv) {
   std::cout << GridLogMessage << "    Effective memory bandwidth  : " << GBPerSec_parchange_lut_chiral << " GB/s" << std::endl;
   std::cout << GridLogMessage << "    Wrong     total performance : " << GFlopsPerSec_wrong_parchange_lut_chiral << " GFlops/s" << std::endl;
   std::cout << GridLogMessage << "    Wrong     memory bandwidth  : " << GBPerSec_wrong_parchange_lut_chiral << " GB/s" << std::endl << std::endl;
+
+  // warmup + measure parchange_lut_chiral_fused
+  grid_printf("parchange_lut_chiral_fused warmup %s\n", precision.c_str()); fflush(stdout);
+  for(auto n : {1, 2, 3, 4, 5}) blockProject_parchange_lut_chiral_fused(res_parchange_lut_chiral_fused, src, basis_fused, lut);
+  grid_printf("parchange_lut_chiral_fused measurement %s\n", precision.c_str()); fflush(stdout);
+  double t10 = usecond();
+  for(int n = 0; n < nIter; n++) blockProject_parchange_lut_chiral_fused(res_parchange_lut_chiral_fused, src, basis_fused, lut);
+  double t11 = usecond();
+  assert(resultsAgree(res_griddefault, res_parchange_lut_chiral_fused, "parchange_lut_chiral_fused"));
+
+  // report parchange_lut_chiral_fused
+  double dt_parchange_lut_chiral_fused                 = (t11 - t10) / 1e6;
+  double GFlopsPerSec_parchange_lut_chiral_fused       = flops / dt_parchange_lut_chiral_fused / 1e9;
+  double GBPerSec_parchange_lut_chiral_fused           = nbytes / dt_parchange_lut_chiral_fused / 1e9;
+  double GFlopsPerSec_wrong_parchange_lut_chiral_fused = flops_wrong / dt_parchange_lut_chiral_fused / 1e9;
+  double GBPerSec_wrong_parchange_lut_chiral_fused     = nbytes_wrong / dt_parchange_lut_chiral_fused / 1e9;
+  std::cout << GridLogMessage << nIter << " applications of blockProject_parchange_lut_chiral_fused" << std::endl;
+  std::cout << GridLogMessage << "    Time to complete            : " << dt_parchange_lut_chiral_fused << " s" << std::endl;
+  std::cout << GridLogMessage << "    Total performance           : " << GFlopsPerSec_parchange_lut_chiral_fused << " GFlops/s" << std::endl;
+  std::cout << GridLogMessage << "    Effective memory bandwidth  : " << GBPerSec_parchange_lut_chiral_fused << " GB/s" << std::endl;
+  std::cout << GridLogMessage << "    Wrong     total performance : " << GFlopsPerSec_wrong_parchange_lut_chiral_fused << " GFlops/s" << std::endl;
+  std::cout << GridLogMessage << "    Wrong     memory bandwidth  : " << GBPerSec_wrong_parchange_lut_chiral_fused << " GB/s" << std::endl << std::endl;
 
   grid_printf("finalize %s\n", precision.c_str()); fflush(stdout);
 }
