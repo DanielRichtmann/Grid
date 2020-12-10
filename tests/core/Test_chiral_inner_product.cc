@@ -143,11 +143,18 @@ accelerator_inline iScalar<vobj> getLowerIpElem(const iVector<iSinglet<vobj>, 2>
   return ret;
 }
 
+template<class vobj,class CComplex,int nbasis,class VLattice>
+inline void blockProject_griddefault(Lattice<iVector<CComplex, nbasis>>& coarseData,
+                                     const Lattice<vobj>&                fineData,
+                                     const VLattice&                     Basis) {
+  blockProject(coarseData, fineData, Basis);
+}
+
 
 template<class vobj,class CComplex,int nbasis,class VLattice>
-inline void standardBlockProject(Lattice<iVector<CComplex, nbasis>>& coarseData,
-                                 const Lattice<vobj>&                fineData,
-                                 const VLattice&                     Basis)
+inline void blockProject_parallelismchange(Lattice<iVector<CComplex, nbasis>>& coarseData,
+                                           const Lattice<vobj>&                fineData,
+                                           const VLattice&                     Basis)
 {
   GridBase *fine   = fineData.Grid();
   GridBase *coarse = coarseData.Grid();
@@ -210,9 +217,9 @@ inline void standardBlockProject(Lattice<iVector<CComplex, nbasis>>& coarseData,
 
 
 template<class vobj,class CComplex,int nbasis,class VLattice>
-inline void chiralBlockProject(Lattice<iVector<CComplex,nbasis > > &coarseData,
-			       const             Lattice<vobj>   &fineData,
-			       const VLattice &Basis)
+inline void blockProject_respectchirality(Lattice<iVector<CComplex,nbasis > > &coarseData,
+			                  const             Lattice<vobj>   &fineData,
+			                  const VLattice &Basis)
 {
   static_assert(nbasis%2 == 0, "Wrong basis size");
   const int nchiralities = 2;
@@ -322,8 +329,9 @@ void runBenchmark(int* argc, char*** argv) {
   FineVector src(UGrid_f); random(pRNG, src);
   FineVector ref(UGrid_f); ref = Zero();
   CoarseVector res_single(UGrid_c); res_single = Zero();
-  CoarseVector res_normal(UGrid_c); res_normal = Zero();
-  CoarseVector diff(UGrid_c); diff = Zero();
+  CoarseVector res_griddefault(UGrid_c); res_griddefault = Zero();
+  CoarseVector res_parallelismchange(UGrid_c); res_parallelismchange = Zero();
+  CoarseVector res_respectchirality(UGrid_c); res_respectchirality = Zero();
   std::vector<FineVector>   basis_single(nsingle, UGrid_f);
   std::vector<FineVector>   basis_normal(nbasis, UGrid_f);
 
@@ -341,27 +349,6 @@ void runBenchmark(int* argc, char*** argv) {
   const int nIter = readFromCommandLineInt(argc, argv, "--niter", 1000);
   double volume=1.0; for(int mu=0; mu<Nd; mu++) volume*=UGrid_f->_fdimensions[mu];
 
-  // warmup + measure standard
-  grid_printf("standard warmup %s\n", precision.c_str()); fflush(stdout);
-  for(auto n : {1, 2, 3, 4, 5}) standardBlockProject(res_normal, src, basis_normal);
-  grid_printf("standard measurement %s\n", precision.c_str()); fflush(stdout);
-  double t0 = usecond();
-  for(int n = 0; n < nIter; n++) standardBlockProject(res_normal, src, basis_normal);
-  double t1 = usecond();
-  double secs_standard = (t1-t0)/1e6;
-
-  // warmup + measure chiral
-  grid_printf("chiral warmup %s\n", precision.c_str()); fflush(stdout);
-  for(auto n : {1, 2, 3, 4, 5}) chiralBlockProject(res_single, src, basis_single);
-  grid_printf("chiral measurement %s\n", precision.c_str()); fflush(stdout);
-  double t2 = usecond();
-  for(int n = 0; n < nIter; n++) chiralBlockProject(res_single, src, basis_single);
-  double t3 = usecond();
-  double secs_chiral = (t3-t2)/1e6;
-
-  // ensure correctness
-  assert(resultsAgree(res_normal, res_single, "chiral"));
-
   // performance figures
   double flops_per_cmul = 6;
   double flops_per_cadd = 2;
@@ -376,23 +363,61 @@ void runBenchmark(int* argc, char*** argv) {
                         + coarse_floats * UGrid_c->gSites())
                         * prec_bytes * nIter;
 
-  // report standard
-  double dt_standard           = (t1 - t0) / 1e6;
-  double GFlopsPerSec_standard = flops / dt_standard / 1e9;
-  double GBPerSec_standard     = nbytes / dt_standard / 1e9;
-  std::cout << GridLogMessage << nIter << " applications of standardblockProject" << std::endl;
-  std::cout << GridLogMessage << "    Time to complete            : " << dt_standard << " s" << std::endl;
-  std::cout << GridLogMessage << "    Total performance           : " << GFlopsPerSec_standard << " GFlops/s" << std::endl;
-  std::cout << GridLogMessage << "    Effective memory bandwidth  : " << GBPerSec_standard << " GB/s" << std::endl << std::endl;
+  // warmup + measure griddefault
+  grid_printf("griddefault warmup %s\n", precision.c_str()); fflush(stdout);
+  for(auto n : {1, 2, 3, 4, 5}) blockProject_griddefault(res_griddefault, src, basis_normal);
+  grid_printf("griddefault measurement %s\n", precision.c_str()); fflush(stdout);
+  double t0 = usecond();
+  for(int n = 0; n < nIter; n++) blockProject_griddefault(res_griddefault, src, basis_normal);
+  double t1 = usecond();
+  double secs_griddefault = (t1-t0)/1e6;
 
-  // report chiral
-  double dt_chiral           = (t3 - t2) / 1e6;
-  double GFlopsPerSec_chiral = flops / dt_chiral / 1e9;
-  double GBPerSec_chiral     = nbytes / dt_chiral / 1e9;
-  std::cout << GridLogMessage << nIter << " applications of chiralblockProject" << std::endl;
-  std::cout << GridLogMessage << "    Time to complete            : " << dt_chiral << " s" << std::endl;
-  std::cout << GridLogMessage << "    Total performance           : " << GFlopsPerSec_chiral << " GFlops/s" << std::endl;
-  std::cout << GridLogMessage << "    Effective memory bandwidth  : " << GBPerSec_chiral << " GB/s" << std::endl << std::endl;
+  // report griddefault
+  double dt_griddefault           = (t1 - t0) / 1e6;
+  double GFlopsPerSec_griddefault = flops / dt_griddefault / 1e9;
+  double GBPerSec_griddefault     = nbytes / dt_griddefault / 1e9;
+  std::cout << GridLogMessage << nIter << " applications of blockProject_griddefault" << std::endl;
+  std::cout << GridLogMessage << "    Time to complete            : " << dt_griddefault << " s" << std::endl;
+  std::cout << GridLogMessage << "    Total performance           : " << GFlopsPerSec_griddefault << " GFlops/s" << std::endl;
+  std::cout << GridLogMessage << "    Effective memory bandwidth  : " << GBPerSec_griddefault << " GB/s" << std::endl << std::endl;
+
+  // warmup + measure parallelismchange
+  grid_printf("parallelismchange warmup %s\n", precision.c_str()); fflush(stdout);
+  for(auto n : {1, 2, 3, 4, 5}) blockProject_parallelismchange(res_parallelismchange, src, basis_normal);
+  grid_printf("parallelismchange measurement %s\n", precision.c_str()); fflush(stdout);
+  double t2 = usecond();
+  for(int n = 0; n < nIter; n++) blockProject_parallelismchange(res_parallelismchange, src, basis_normal);
+  double t3 = usecond();
+  double secs_parallelismchange = (t1-t0)/1e6;
+  assert(resultsAgree(res_griddefault, res_parallelismchange, "parallelismchange"));
+
+  // report parallelismchange
+  double dt_parallelismchange           = (t3 - t2) / 1e6;
+  double GFlopsPerSec_parallelismchange = flops / dt_parallelismchange / 1e9;
+  double GBPerSec_parallelismchange     = nbytes / dt_parallelismchange / 1e9;
+  std::cout << GridLogMessage << nIter << " applications of blockProject_parallelismchange" << std::endl;
+  std::cout << GridLogMessage << "    Time to complete            : " << dt_parallelismchange << " s" << std::endl;
+  std::cout << GridLogMessage << "    Total performance           : " << GFlopsPerSec_parallelismchange << " GFlops/s" << std::endl;
+  std::cout << GridLogMessage << "    Effective memory bandwidth  : " << GBPerSec_parallelismchange << " GB/s" << std::endl << std::endl;
+
+  // warmup + measure respectchirality
+  grid_printf("respectchirality warmup %s\n", precision.c_str()); fflush(stdout);
+  for(auto n : {1, 2, 3, 4, 5}) blockProject_respectchirality(res_respectchirality, src, basis_single);
+  grid_printf("respectchirality measurement %s\n", precision.c_str()); fflush(stdout);
+  double t4 = usecond();
+  for(int n = 0; n < nIter; n++) blockProject_respectchirality(res_respectchirality, src, basis_single);
+  double t5 = usecond();
+  double secs_respectchirality = (t3-t2)/1e6;
+  assert(resultsAgree(res_griddefault, res_respectchirality, "respectchirality"));
+
+  // report respectchirality
+  double dt_respectchirality           = (t5 - t4) / 1e6;
+  double GFlopsPerSec_respectchirality = flops / dt_respectchirality / 1e9;
+  double GBPerSec_respectchirality     = nbytes / dt_respectchirality / 1e9;
+  std::cout << GridLogMessage << nIter << " applications of blockProject_respectchirality" << std::endl;
+  std::cout << GridLogMessage << "    Time to complete            : " << dt_respectchirality << " s" << std::endl;
+  std::cout << GridLogMessage << "    Total performance           : " << GFlopsPerSec_respectchirality << " GFlops/s" << std::endl;
+  std::cout << GridLogMessage << "    Effective memory bandwidth  : " << GBPerSec_respectchirality << " GB/s" << std::endl << std::endl;
 
   grid_printf("finalize %s\n", precision.c_str()); fflush(stdout);
 }
