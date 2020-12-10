@@ -113,63 +113,7 @@ bool resultsAgree(const Field& ref, const Field& res, const std::string& name) {
 }
 
 
-// need to get types depending on the types we feed in correct
-template<typename vtype>       struct ChiralHalf {};
-template<typename vtype>       struct ChiralHalf<iSpinColourVector<vtype>>   { typedef iHalfSpinColourVector<vtype> type; };
-template<typename vtype,int N> struct ChiralHalf<iVector<iSinglet<vtype>,N>> { typedef iVector<iSinglet<vtype>,N/2> type; };
-
-
-// hitting cases
-template<class vtype,int which> accelerator_inline
-typename std::enable_if<isSpinor<iVector<vtype,Ns>>::value && (which == 0 || which == 1), void>::type
-extractChirality(iVector<vtype,Nhs>& half, const iVector<vtype,Ns>& full) {
-  half(which+0) = full(which+0);
-  half(which+1) = full(which+1);
-}
-template<class vtype,int nbasis,int which> accelerator_inline
-typename std::enable_if<isCoarsened<iVector<vtype,nbasis>>::value && nbasis%2 == 0 && (which == 0 || which == 1), void>::type
-extractChirality(iVector<vtype,nbasis/2>& half, const iVector<vtype,nbasis>& full) {
-  const int nb=nbasis/2;
-  const int start=which*nb;
-  for(int n=0; n<nb; n++) {
-    half(start+n) = full(start+n);
-  }
-}
-
-
-// other cases
-template<class rtype,class vtype,int N,int which> accelerator_inline
-typename std::enable_if<!isSpinor<iVector<vtype,N>>::value && !isCoarsened<iVector<vtype,N>>::value, void>::type
-extractChirality(iVector<rtype,N>& half, const iVector<vtype,N>& full) {
-  for(int i=0;i<N;i++) {
-    extractChirality<which>(half._internal[i],full._internal[i]);
-  }
-}
-template<class rtype,class vtype,int which> accelerator_inline
-void extractChirality(iScalar<rtype>& half, const iScalar<vtype>& full) {
-  extractChirality<which>(half._internal,full._internal);
-}
-template<class rtype,class vtype,int N,int which> accelerator_inline
-void extractChirality(iMatrix<rtype,N>& half, const iMatrix<vtype,N>& full) {
-  for(int i=0;i<N;i++){
-    for(int j=0;j<N;j++){
-      extractChirality<which>(half._internal[i][j],full._internal[i][j]);
-    }}
-}
-
-
-// converting run time to compile time parameter
-template<class htype, class ftype>
-accelerator_inline void extractChirality(htype& half, const ftype& full, int which) {
-  if      (which == 0) extractChirality<ftype,0>(half, full);
-  else if (which == 1) extractChirality<ftype,1>(half, full);
-  else assert(0);
-}
-
-  // iScalar<T> ret;
-  // ret._internal = a;
-  // return ret;
-
+// functions needed for the initial implementation of the chirality respecting block project
 template<typename vobj, typename std::enable_if<isGridFundamental<vobj>::value, vobj>::type* = nullptr>
 accelerator_inline iScalar<vobj> getUpperIpElem(const iScalar<iVector<iScalar<vobj>, 2>>& in)
 {
