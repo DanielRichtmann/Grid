@@ -37,20 +37,28 @@ using namespace Grid;
 #endif
 
 
-// // as it is originally
-// #define INNER_PRODUCT innerProductD2
-// #define INNER_PRODUCT_LOWER_PART innerProductLowerPartD2
-// #define INNER_PRODUCT_UPPER_PART innerProductUpperPartD2
+// #define IP_D2
+// #define IP_D
+// #define IP_NORMAL
 
-// // other version without 'D' rather than 'D2'
-// #define INNER_PRODUCT innerProductD
-// #define INNER_PRODUCT_LOWER_PART innerProductLowerPartD
-// #define INNER_PRODUCT_UPPER_PART innerProductUpperPartD
-
-// other version without ' ' rather than 'D2'
+#if defined(IP_D2) // as it is originally in gpt
+#define INNER_PRODUCT innerProductD2
+#define INNER_PRODUCT_LOWER_PART innerProductLowerPartD2
+#define INNER_PRODUCT_UPPER_PART innerProductUpperPartD2
+#pragma message("compiling with IP_D2")
+#elif defined(IP_D) // other version with 'D' rather than 'D2'
+#define INNER_PRODUCT innerProductD
+#define INNER_PRODUCT_LOWER_PART innerProductLowerPartD
+#define INNER_PRODUCT_UPPER_PART innerProductUpperPartD
+#pragma message("compiling with IP_D")
+#elif defined(IP_NORMAL) // other version with ' ' rather than 'D2'
 #define INNER_PRODUCT innerProduct
 #define INNER_PRODUCT_LOWER_PART innerProductLowerPart
 #define INNER_PRODUCT_UPPER_PART innerProductUpperPart
+#pragma message("compiling with IP_NORMAL")
+#else
+#error Either one of IP_D2, IP_D, or IP_NORMAL needs to be defined
+#endif
 
 
 template<class ScalarField>
