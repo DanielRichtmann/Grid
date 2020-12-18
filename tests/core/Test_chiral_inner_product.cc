@@ -504,8 +504,8 @@ inline void blockProject_parchange_chiral(Lattice<iVector<CComplex,nbasis > >& c
 
   accelerator_for(_idx, nchiralities * nvectors * coarse_osites, vobj::Nsimd(), {
     auto idx       = _idx;
-    auto chirality = idx % nchiralities; idx  /= nchiralities;
     auto basis_i   = idx % nvectors;     idx  /= nvectors;
+    auto chirality = idx % nchiralities; idx  /= nchiralities;
     auto sc        = idx % coarse_osites; idx /= coarse_osites;
 
     Coordinate coor_c(_ndimension);
@@ -571,8 +571,8 @@ inline void blockProject_parchange_lut_chiral(Lattice<iVector<CComplex, nbasis>>
 
   accelerator_for(_idx, nchiralities * nvectors * coarse_osites, vobj::Nsimd(), {
     auto idx       = _idx;
-    auto chirality = idx % nchiralities; idx  /= nchiralities;
     auto basis_i   = idx % nvectors;     idx  /= nvectors;
+    auto chirality = idx % nchiralities; idx  /= nchiralities;
     auto sc        = idx % coarse_osites; idx /= coarse_osites;
 
     auto coarse_i_offset = chirality * nvectors;
@@ -622,8 +622,8 @@ inline void blockProject_parchange_lut_chiral_fused(Lattice<iVector<CComplex, nb
 
   accelerator_for(_idx, nchiralities * nvectors * coarse_osites, vobj::Nsimd(), {
     auto idx       = _idx;
-    auto chirality = idx % nchiralities; idx  /= nchiralities;
     auto basis_i   = idx % nvectors;     idx  /= nvectors;
+    auto chirality = idx % nchiralities; idx  /= nchiralities;
     auto sc        = idx % coarse_osites; idx /= coarse_osites;
 
     auto coarse_i_offset = chirality * nvectors;
