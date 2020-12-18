@@ -450,6 +450,104 @@ inline void blockProject_parchange_lut(Lattice<iVector<CComplex, nbasis>>& coars
 }
 
 
+template<class vobj,class CComplex,int nbasis,class VLattice,class ScalarField>
+inline void blockProject_parchange_play(Lattice<iVector<CComplex, nbasis>>& coarseData,
+                                        const Lattice<vobj>&                fineData,
+                                        const VLattice&                     Basis,
+                                        CoarseningLookupTable<ScalarField>& lut)
+{
+  // double t0 = usecond();
+  GridBase *fine   = fineData.Grid();
+  GridBase *coarse = coarseData.Grid();
+
+  // checks
+  assert(fine->_ndimension == coarse->_ndimension);
+  for(int i = 0; i < nbasis; i++) {conformable(Basis[i], fineData);}
+  assert(nbasis == Basis.size());
+  assert(lut.gridsMatch(coarse, fine));
+
+  long coarse_osites = coarse->oSites();
+  long fine_osites   = fine->oSites();
+
+  // double t1 = usecond();
+
+  typename std::remove_reference<decltype(coarseData)>::type ip_tmp(fine);
+
+  // double t2 = usecond();
+  // double t3;
+
+  #if 0
+  {
+    typedef decltype(Basis[0].View(AcceleratorRead)) View;
+    Vector<View> Basis_v; Basis_v.reserve(Basis.size());
+    for(int i=0;i<Basis.size();i++){
+      Basis_v.push_back(Basis[i].View(AcceleratorRead));
+    }
+    View* Basis_p = &Basis_v[0];
+    autoView(fineData_v, fineData, AcceleratorRead);
+    autoView(ip_tmp_v, ip_tmp, AcceleratorWrite);
+
+    // t3 = usecond();
+
+    accelerator_for(sfi, nbasis * fine_osites, vobj::Nsimd(), {
+      auto i  = sfi % nbasis;
+      auto sf = sfi / nbasis;
+      convertType(ip_tmp_v[sf](i), INNER_PRODUCT(Basis_p[i](sf), fineData_v(sf)));
+    });
+
+    for(int i=0;i<Basis.size();i++) Basis_v[i].ViewClose();
+  }
+  #else
+  {
+    typedef decltype(Basis[0].View(AcceleratorRead)) View;
+    Vector<View> Basis_v; Basis_v.reserve(Basis.size());
+    for(int i=0;i<Basis.size();i++){
+      Basis_v.push_back(Basis[i].View(AcceleratorRead));
+    }
+    View* Basis_p = &Basis_v[0];
+    autoView(fineData_v, fineData, AcceleratorRead);
+    autoView(ip_tmp_v, ip_tmp, AcceleratorWrite);
+
+    // t3 = usecond();
+
+    accelerator_for(sf, fine_osites, vobj::Nsimd(), {
+      for(int i=0; i<nbasis; i++)
+      convertType(ip_tmp_v[sf](i), INNER_PRODUCT(Basis_p[i](sf), fineData_v(sf)));
+    });
+
+    for(int i=0;i<Basis.size();i++) Basis_v[i].ViewClose();
+  }
+  #endif
+
+  // double t4 = usecond();
+  // double t5;
+
+  {
+    auto lut_v = lut.View();
+    auto sizes_v = lut.Sizes();
+    autoView(ip_tmp_v, ip_tmp, AcceleratorRead);
+    autoView(coarseData_v, coarseData, AcceleratorWrite);
+
+    // t5 = usecond();
+
+    accelerator_for(sci, nbasis * coarse_osites, vobj::Nsimd(), {
+      auto i  = sci % nbasis;
+      auto sc = sci / nbasis;
+      decltype(coalescedRead(ip_tmp_v[0](0))) red_tmp = Zero();
+      for(int j=0; j<sizes_v[sc]; ++j) {
+        int sf = lut_v[sc][j];
+        red_tmp = red_tmp + coalescedRead(ip_tmp_v[sf](i));
+      }
+      convertType(coarseData_v[sc](i), red_tmp);
+    });
+  }
+  // double t6 = usecond();
+  // double ttotal = t6 - t0;
+  // printf("preamble = %f, alloc = %f, fine_views = %f, fine_calc = %f, coarse_views = %f, coarse_calc = %f\n",
+  //        (t1-t0)/1e6, (t2-t1)/1e6, (t3-t2)/1e6, (t4-t3)/1e6, (t5-t4)/1e6, (t6-t5)/1e6);
+}
+
+
 template<class vobj,class CComplex,int nbasis,class VLattice>
 inline void blockProject_parchange_chiral(Lattice<iVector<CComplex,nbasis > >& coarseData,
 			                  const Lattice<vobj>&                 fineData,
