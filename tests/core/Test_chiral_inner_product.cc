@@ -37,6 +37,22 @@ using namespace Grid;
 #endif
 
 
+// // as it is originally
+// #define INNER_PRODUCT innerProductD2
+// #define INNER_PRODUCT_LOWER_PART innerProductLowerPartD2
+// #define INNER_PRODUCT_UPPER_PART innerProductUpperPartD2
+
+// // other version without 'D' rather than 'D2'
+// #define INNER_PRODUCT innerProductD
+// #define INNER_PRODUCT_LOWER_PART innerProductLowerPartD
+// #define INNER_PRODUCT_UPPER_PART innerProductUpperPartD
+
+// other version without ' ' rather than 'D2'
+#define INNER_PRODUCT innerProduct
+#define INNER_PRODUCT_LOWER_PART innerProductLowerPart
+#define INNER_PRODUCT_UPPER_PART innerProductUpperPart
+
+
 template<class ScalarField>
 class CoarseningLookupTable {
 public:
@@ -378,7 +394,7 @@ inline void blockProject_parchange(Lattice<iVector<CComplex, nbasis>>& coarseDat
     Lexicographic::CoorFromIndex(coor_c, sc, coarse_rdimensions);
 
     int sf;
-    decltype(innerProductD2(Basis_v[0](0), fineData_v(0))) reduce = Zero();
+    decltype(INNER_PRODUCT(Basis_v[0](0), fineData_v(0))) reduce = Zero();
 
     for(int sb = 0; sb < block_v; ++sb) {
       Coordinate coor_b(_ndimension);
@@ -388,7 +404,7 @@ inline void blockProject_parchange(Lattice<iVector<CComplex, nbasis>>& coarseDat
       for(int d = 0; d < _ndimension; ++d) coor_f[d] = coor_c[d] * block_r[d] + coor_b[d];
       Lexicographic::IndexFromCoor(coor_f, sf, fine_rdimensions);
 
-      reduce = reduce + innerProductD2(Basis_v[i](sf), fineData_v(sf));
+      reduce = reduce + INNER_PRODUCT(Basis_v[i](sf), fineData_v(sf));
     }
     convertType(coarseData_v[sc](i), TensorRemove(reduce));
   });
@@ -429,11 +445,11 @@ inline void blockProject_parchange_lut(Lattice<iVector<CComplex, nbasis>>& coars
     auto i  = sci % nbasis;
     auto sc = sci / nbasis;
 
-    decltype(innerProductD2(Basis_v[0](0), fineData_v(0))) reduce = Zero();
+    decltype(INNER_PRODUCT(Basis_v[0](0), fineData_v(0))) reduce = Zero();
 
     for(int j=0; j<sizes_v[sc]; ++j) {
       int sf = lut_v[sc][j];
-      reduce = reduce + innerProductD2(Basis_v[i](sf), fineData_v(sf));
+      reduce = reduce + INNER_PRODUCT(Basis_v[i](sf), fineData_v(sf));
     }
     convertType(coarseData_v[sc](i), TensorRemove(reduce));
   });
@@ -496,7 +512,7 @@ inline void blockProject_parchange_chiral(Lattice<iVector<CComplex,nbasis > >& c
     Lexicographic::CoorFromIndex(coor_c, sc, coarse_rdimensions);
 
     int sf;
-    decltype(innerProductLowerPartD2(Basis_v[0](0), fineData_v(0))) reduce = Zero();
+    decltype(INNER_PRODUCT_UPPER_PART(Basis_v[0](0), fineData_v(0))) reduce = Zero();
 
     auto coarse_i_offset = chirality * nvectors;
 
@@ -509,9 +525,9 @@ inline void blockProject_parchange_chiral(Lattice<iVector<CComplex,nbasis > >& c
       Lexicographic::IndexFromCoor(coor_f, sf, fine_rdimensions);
 
       if (chirality == 0)
-        reduce = reduce + innerProductUpperPartD2(Basis_v[basis_i](sf), fineData_v(sf));
+        reduce = reduce + INNER_PRODUCT_UPPER_PART(Basis_v[basis_i](sf), fineData_v(sf));
       else if (chirality == 1)
-        reduce = reduce + innerProductLowerPartD2(Basis_v[basis_i](sf), fineData_v(sf));
+        reduce = reduce + INNER_PRODUCT_LOWER_PART(Basis_v[basis_i](sf), fineData_v(sf));
       else
         assert(0);
     }
@@ -561,14 +577,14 @@ inline void blockProject_parchange_lut_chiral(Lattice<iVector<CComplex, nbasis>>
 
     auto coarse_i_offset = chirality * nvectors;
 
-    decltype(innerProductLowerPartD2(Basis_v[0](0), fineData_v(0))) reduce = Zero();
+    decltype(INNER_PRODUCT_UPPER_PART(Basis_v[0](0), fineData_v(0))) reduce = Zero();
 
     for(int j=0; j<sizes_v[sc]; ++j) {
       int sf = lut_v[sc][j];
       if (chirality == 0)
-        reduce = reduce + innerProductUpperPartD2(Basis_v[basis_i](sf), fineData_v(sf));
+        reduce = reduce + INNER_PRODUCT_UPPER_PART(Basis_v[basis_i](sf), fineData_v(sf));
       else if (chirality == 1)
-        reduce = reduce + innerProductLowerPartD2(Basis_v[basis_i](sf), fineData_v(sf));
+        reduce = reduce + INNER_PRODUCT_LOWER_PART(Basis_v[basis_i](sf), fineData_v(sf));
       else
         assert(0);
     }
@@ -612,14 +628,14 @@ inline void blockProject_parchange_lut_chiral_fused(Lattice<iVector<CComplex, nb
 
     auto coarse_i_offset = chirality * nvectors;
 
-    decltype(innerProductLowerPartD2(coalescedRead(projector_v[0](0)), fineData_v(0))) reduce = Zero();
+    decltype(INNER_PRODUCT_UPPER_PART(coalescedRead(projector_v[0](0)), fineData_v(0))) reduce = Zero();
 
     for(int j=0; j<sizes_v[sc]; ++j) {
       int sf = lut_v[sc][j];
       if (chirality == 0)
-        reduce = reduce + innerProductUpperPartD2(coalescedRead(projector_v[sf](basis_i)), fineData_v(sf));
+        reduce = reduce + INNER_PRODUCT_UPPER_PART(coalescedRead(projector_v[sf](basis_i)), fineData_v(sf));
       else if (chirality == 1)
-        reduce = reduce + innerProductLowerPartD2(coalescedRead(projector_v[sf](basis_i)), fineData_v(sf));
+        reduce = reduce + INNER_PRODUCT_LOWER_PART(coalescedRead(projector_v[sf](basis_i)), fineData_v(sf));
       else
         assert(0);
     }
@@ -638,7 +654,19 @@ void runBenchmark(int* argc, char*** argv) {
   const int nbasis = NBASIS; static_assert((nbasis & 0x1) == 0, "");
   const int nsingle = nbasis/2;
 
+  // helpers
+#define xstr(s) str(s)
+#define str(s) #s
+
+  // print info about run
   std::cout << GridLogMessage << "Compiled with nbasis = " << nbasis << " -> nb = " << nsingle << std::endl;
+  std::cout << GridLogMessage << "Compiled with INNER_PRODUCT            = " << xstr(INNER_PRODUCT) << std::endl;
+  std::cout << GridLogMessage << "Compiled with INNER_PRODUCT_UPPER_PART = " << xstr(INNER_PRODUCT_UPPER_PART) << std::endl;
+  std::cout << GridLogMessage << "Compiled with INNER_PRODUCT_LOWER_PART = " << xstr(INNER_PRODUCT_LOWER_PART) << std::endl;
+
+  // get rid of helpers
+#undef xstr
+#undef str
 
   // setup grids
   GridCartesian* UGrid_f =
