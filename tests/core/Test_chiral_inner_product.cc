@@ -634,6 +634,14 @@ inline void blockProject_parchange_lut_chiral_fused(Lattice<iVector<CComplex, nb
 }
 
 
+template<class vobj,class CComplex,int nbasis,class VLattice>
+inline void blockPromote_griddefault(const Lattice<iVector<CComplex, nbasis>>& coarseData,
+                                           Lattice<vobj>&                      fineData,
+                                     const VLattice&                           Basis) {
+  blockPromote(coarseData, fineData, Basis);
+}
+
+
 template<typename vCoeff_t>
 void runBenchmark(int* argc, char*** argv) {
   // precision
@@ -754,139 +762,104 @@ void runBenchmark(int* argc, char*** argv) {
   std::cout << GridLogMessage << "Project: Wrong   per site: flops, words, bytes, flops/bytes: " << project_flops_per_site * 2 << " " << nbytes_wrong_project / factor << " " << flops_wrong_project/nbytes_wrong_project << std::endl;
   std::cout << GridLogMessage << "Project: MGBENCH per site: flops, words, bytes, flops/bytes: " << (8 * fine_complex) * nbasis << " " << nbytes_mgbench_project / factor << " " << flops_mgbench_project/nbytes_mgbench_project << std::endl;
 
-  // warmup + measure griddefault
-  grid_printf("griddefault warmup %s\n", precision.c_str()); fflush(stdout);
-  for(auto n : {1, 2, 3, 4, 5}) blockProject_griddefault(res_c_griddefault, src_f, basis_normal);
-  grid_printf("griddefault measurement %s\n", precision.c_str()); fflush(stdout);
-  double t0 = usecond();
-  for(int n = 0; n < nIter; n++) blockProject_griddefault(res_c_griddefault, src_f, basis_normal);
-  double t1 = usecond();
+#define BENCH_PROJECT_VERSION(VERSION, ...)\
+  double secs_project_##VERSION;\
+  {\
+    grid_printf("warmup %s %s\n", #VERSION, precision.c_str()); fflush(stdout);\
+    for(auto n : {1, 2, 3, 4, 5}) blockProject_##VERSION(res_c_##VERSION, src_f, __VA_ARGS__);\
+    grid_printf("measurement %s %s\n", #VERSION, precision.c_str()); fflush(stdout);\
+    double t0 = usecond();\
+    for(int n = 0; n < nIter; n++) blockProject_##VERSION(res_c_##VERSION, src_f, __VA_ARGS__);\
+    double t1 = usecond();\
+    secs_project_##VERSION = (t1-t0)/1e6;\
+    assert(resultsAgree(res_c_griddefault, res_c_##VERSION, #VERSION));\
+  }
 
-  // report griddefault
-  double dt_project_griddefault                 = (t1 - t0) / 1e6;
-  double GFlopsPerSec_project_griddefault       = flops_project / dt_project_griddefault / 1e9;
-  double GBPerSec_project_griddefault           = nbytes_project / dt_project_griddefault / 1e9;
-  double GFlopsPerSec_project_wrong_griddefault = flops_wrong_project / dt_project_griddefault / 1e9;
-  double GBPerSec_project_wrong_griddefault     = nbytes_wrong_project / dt_project_griddefault / 1e9;
-  std::cout << GridLogMessage << nIter << " applications of blockProject_griddefault" << std::endl;
-  std::cout << GridLogMessage << "    Time to complete            : " << dt_project_griddefault << " s" << std::endl;
-  std::cout << GridLogMessage << "    Total performance           : " << GFlopsPerSec_project_griddefault << " GFlops/s" << std::endl;
-  std::cout << GridLogMessage << "    Effective memory bandwidth  : " << GBPerSec_project_griddefault << " GB/s" << std::endl;
-  std::cout << GridLogMessage << "    Wrong     total performance : " << GFlopsPerSec_project_wrong_griddefault << " GFlops/s" << std::endl;
-  std::cout << GridLogMessage << "    Wrong     memory bandwidth  : " << GBPerSec_project_wrong_griddefault << " GB/s" << std::endl << std::endl;
+#define PRINT_PROJECT_VERSION(VERSION) {\
+  double GFlopsPerSec_project_##VERSION       = flops_project / secs_project_##VERSION / 1e9;\
+  double GBPerSec_project_##VERSION           = nbytes_project / secs_project_##VERSION / 1e9;\
+  double GFlopsPerSec_project_wrong_##VERSION = flops_wrong_project / secs_project_##VERSION / 1e9;\
+  double GBPerSec_project_wrong_##VERSION     = nbytes_wrong_project / secs_project_##VERSION / 1e9;\
+  std::cout << GridLogMessage << nIter << " applications of blockProject_" << #VERSION << std::endl;\
+  std::cout << GridLogMessage << "    Time to complete            : " << secs_project_##VERSION << " s" << std::endl;\
+  std::cout << GridLogMessage << "    Total performance           : " << GFlopsPerSec_project_##VERSION << " GFlops/s" << std::endl;\
+  std::cout << GridLogMessage << "    Effective memory bandwidth  : " << GBPerSec_project_##VERSION << " GB/s" << std::endl;\
+  std::cout << GridLogMessage << "    Wrong     total performance : " << GFlopsPerSec_project_wrong_##VERSION << " GFlops/s" << std::endl;\
+  std::cout << GridLogMessage << "    Wrong     memory bandwidth  : " << GBPerSec_project_wrong_##VERSION << " GB/s" << std::endl << std::endl;\
+}
 
-  // warmup + measure parchange
-  grid_printf("parchange warmup %s\n", precision.c_str()); fflush(stdout);
-  for(auto n : {1, 2, 3, 4, 5}) blockProject_parchange(res_c_parchange, src_f, basis_normal);
-  grid_printf("parchange measurement %s\n", precision.c_str()); fflush(stdout);
-  double t2 = usecond();
-  for(int n = 0; n < nIter; n++) blockProject_parchange(res_c_parchange, src_f, basis_normal);
-  double t3 = usecond();
-  assert(resultsAgree(res_c_griddefault, res_c_parchange, "parchange"));
+  BENCH_PROJECT_VERSION(griddefault, basis_normal);                    PRINT_PROJECT_VERSION(griddefault);
+  BENCH_PROJECT_VERSION(parchange, basis_normal);                      PRINT_PROJECT_VERSION(parchange);
+  BENCH_PROJECT_VERSION(parchange_lut, basis_normal, lut);             PRINT_PROJECT_VERSION(parchange_lut);
+  BENCH_PROJECT_VERSION(parchange_chiral, basis_single);               PRINT_PROJECT_VERSION(parchange_chiral);
+  BENCH_PROJECT_VERSION(parchange_lut_chiral, basis_single, lut);      PRINT_PROJECT_VERSION(parchange_lut_chiral);
+  // BENCH_PROJECT_VERSION(parchange_lut_chiral_fused, basis_fused, lut); PRINT_PROJECT_VERSION(parchange_lut_chiral_fused);
+  BENCH_PROJECT_VERSION(parchange_play, basis_normal, lut);            PRINT_PROJECT_VERSION(parchange_play);
 
-  // report parchange
-  double dt_project_parchange                 = (t3 - t2) / 1e6;
-  double GFlopsPerSec_project_parchange       = flops_project / dt_project_parchange / 1e9;
-  double GBPerSec_project_parchange           = nbytes_project / dt_project_parchange / 1e9;
-  double GFlopsPerSec_project_wrong_parchange = flops_wrong_project / dt_project_parchange / 1e9;
-  double GBPerSec_project_wrong_parchange     = nbytes_wrong_project / dt_project_parchange / 1e9;
-  std::cout << GridLogMessage << nIter << " applications of blockProject_parchange" << std::endl;
-  std::cout << GridLogMessage << "    Time to complete            : " << dt_project_parchange << " s" << std::endl;
-  std::cout << GridLogMessage << "    Total performance           : " << GFlopsPerSec_project_parchange << " GFlops/s" << std::endl;
-  std::cout << GridLogMessage << "    Effective memory bandwidth  : " << GBPerSec_project_parchange << " GB/s" << std::endl;
-  std::cout << GridLogMessage << "    Wrong     total performance : " << GFlopsPerSec_project_wrong_parchange << " GFlops/s" << std::endl;
-  std::cout << GridLogMessage << "    Wrong     memory bandwidth  : " << GBPerSec_project_wrong_parchange << " GB/s" << std::endl << std::endl;
-
-  // warmup + measure parchange_lut
-  grid_printf("parchange_lut warmup %s\n", precision.c_str()); fflush(stdout);
-  for(auto n : {1, 2, 3, 4, 5}) blockProject_parchange_lut(res_c_parchange_lut, src_f, basis_normal, lut);
-  grid_printf("parchange_lut measurement %s\n", precision.c_str()); fflush(stdout);
-  double t4 = usecond();
-  for(int n = 0; n < nIter; n++) blockProject_parchange_lut(res_c_parchange_lut, src_f, basis_normal, lut);
-  double t5 = usecond();
-  assert(resultsAgree(res_c_griddefault, res_c_parchange_lut, "parchange_lut"));
-
-  // report parchange_lut
-  double dt_project_parchange_lut                 = (t5 - t4) / 1e6;
-  double GFlopsPerSec_project_parchange_lut       = flops_project / dt_project_parchange_lut / 1e9;
-  double GBPerSec_project_parchange_lut           = nbytes_project / dt_project_parchange_lut / 1e9;
-  double GFlopsPerSec_project_wrong_parchange_lut = flops_wrong_project / dt_project_parchange_lut / 1e9;
-  double GBPerSec_project_wrong_parchange_lut     = nbytes_wrong_project / dt_project_parchange_lut / 1e9;
-  std::cout << GridLogMessage << nIter << " applications of blockProject_parchange_lut" << std::endl;
-  std::cout << GridLogMessage << "    Time to complete            : " << dt_project_parchange_lut << " s" << std::endl;
-  std::cout << GridLogMessage << "    Total performance           : " << GFlopsPerSec_project_parchange_lut << " GFlops/s" << std::endl;
-  std::cout << GridLogMessage << "    Effective memory bandwidth  : " << GBPerSec_project_parchange_lut << " GB/s" << std::endl;
-  std::cout << GridLogMessage << "    Wrong     total performance : " << GFlopsPerSec_project_wrong_parchange_lut << " GFlops/s" << std::endl;
-  std::cout << GridLogMessage << "    Wrong     memory bandwidth  : " << GBPerSec_project_wrong_parchange_lut << " GB/s" << std::endl << std::endl;
-
-  // warmup + measure parchange_chiral
-  grid_printf("parchange_chiral warmup %s\n", precision.c_str()); fflush(stdout);
-  for(auto n : {1, 2, 3, 4, 5}) blockProject_parchange_chiral(res_c_parchange_chiral, src_f, basis_single);
-  grid_printf("parchange_chiral measurement %s\n", precision.c_str()); fflush(stdout);
-  double t6 = usecond();
-  for(int n = 0; n < nIter; n++) blockProject_parchange_chiral(res_c_parchange_chiral, src_f, basis_single);
-  double t7 = usecond();
-  assert(resultsAgree(res_c_griddefault, res_c_parchange_chiral, "parchange_chiral"));
-
-  // report parchange_chiral
-  double dt_project_parchange_chiral                 = (t7 - t6) / 1e6;
-  double GFlopsPerSec_project_parchange_chiral       = flops_project / dt_project_parchange_chiral / 1e9;
-  double GBPerSec_project_parchange_chiral           = nbytes_project / dt_project_parchange_chiral / 1e9;
-  double GFlopsPerSec_project_wrong_parchange_chiral = flops_wrong_project / dt_project_parchange_chiral / 1e9;
-  double GBPerSec_project_wrong_parchange_chiral     = nbytes_wrong_project / dt_project_parchange_chiral / 1e9;
-  std::cout << GridLogMessage << nIter << " applications of blockProject_parchange_chiral" << std::endl;
-  std::cout << GridLogMessage << "    Time to complete            : " << dt_project_parchange_chiral << " s" << std::endl;
-  std::cout << GridLogMessage << "    Total performance           : " << GFlopsPerSec_project_parchange_chiral << " GFlops/s" << std::endl;
-  std::cout << GridLogMessage << "    Effective memory bandwidth  : " << GBPerSec_project_parchange_chiral << " GB/s" << std::endl;
-  std::cout << GridLogMessage << "    Wrong     total performance : " << GFlopsPerSec_project_wrong_parchange_chiral << " GFlops/s" << std::endl;
-  std::cout << GridLogMessage << "    Wrong     memory bandwidth  : " << GBPerSec_project_wrong_parchange_chiral << " GB/s" << std::endl << std::endl;
-
-  // warmup + measure parchange_lut_chiral
-  grid_printf("parchange_lut_chiral warmup %s\n", precision.c_str()); fflush(stdout);
-  for(auto n : {1, 2, 3, 4, 5}) blockProject_parchange_lut_chiral(res_c_parchange_lut_chiral, src_f, basis_single, lut);
-  grid_printf("parchange_lut_chiral measurement %s\n", precision.c_str()); fflush(stdout);
-  double t8 = usecond();
-  for(int n = 0; n < nIter; n++) blockProject_parchange_lut_chiral(res_c_parchange_lut_chiral, src_f, basis_single, lut);
-  double t9 = usecond();
-  assert(resultsAgree(res_c_griddefault, res_c_parchange_lut_chiral, "parchange_lut_chiral"));
-
-  // report parchange_lut_chiral
-  double dt_project_parchange_lut_chiral                 = (t9 - t8) / 1e6;
-  double GFlopsPerSec_project_parchange_lut_chiral       = flops_project / dt_project_parchange_lut_chiral / 1e9;
-  double GBPerSec_project_parchange_lut_chiral           = nbytes_project / dt_project_parchange_lut_chiral / 1e9;
-  double GFlopsPerSec_project_wrong_parchange_lut_chiral = flops_wrong_project / dt_project_parchange_lut_chiral / 1e9;
-  double GBPerSec_project_wrong_parchange_lut_chiral     = nbytes_wrong_project / dt_project_parchange_lut_chiral / 1e9;
-  std::cout << GridLogMessage << nIter << " applications of blockProject_parchange_lut_chiral" << std::endl;
-  std::cout << GridLogMessage << "    Time to complete            : " << dt_project_parchange_lut_chiral << " s" << std::endl;
-  std::cout << GridLogMessage << "    Total performance           : " << GFlopsPerSec_project_parchange_lut_chiral << " GFlops/s" << std::endl;
-  std::cout << GridLogMessage << "    Effective memory bandwidth  : " << GBPerSec_project_parchange_lut_chiral << " GB/s" << std::endl;
-  std::cout << GridLogMessage << "    Wrong     total performance : " << GFlopsPerSec_project_wrong_parchange_lut_chiral << " GFlops/s" << std::endl;
-  std::cout << GridLogMessage << "    Wrong     memory bandwidth  : " << GBPerSec_project_wrong_parchange_lut_chiral << " GB/s" << std::endl << std::endl;
-
-  // warmup + measure parchange_lut_chiral_fused
-  grid_printf("parchange_lut_chiral_fused warmup %s\n", precision.c_str()); fflush(stdout);
-  for(auto n : {1, 2, 3, 4, 5}) blockProject_parchange_lut_chiral_fused(res_c_parchange_lut_chiral_fused, src_f, basis_fused, lut);
-  grid_printf("parchange_lut_chiral_fused measurement %s\n", precision.c_str()); fflush(stdout);
-  double t10 = usecond();
-  for(int n = 0; n < nIter; n++) blockProject_parchange_lut_chiral_fused(res_c_parchange_lut_chiral_fused, src_f, basis_fused, lut);
-  double t11 = usecond();
-  assert(resultsAgree(res_c_griddefault, res_c_parchange_lut_chiral_fused, "parchange_lut_chiral_fused"));
-
-  // report parchange_lut_chiral_fused
-  double dt_project_parchange_lut_chiral_fused                 = (t11 - t10) / 1e6;
-  double GFlopsPerSec_project_parchange_lut_chiral_fused       = flops_project / dt_project_parchange_lut_chiral_fused / 1e9;
-  double GBPerSec_project_parchange_lut_chiral_fused           = nbytes_project / dt_project_parchange_lut_chiral_fused / 1e9;
-  double GFlopsPerSec_project_wrong_parchange_lut_chiral_fused = flops_wrong_project / dt_project_parchange_lut_chiral_fused / 1e9;
-  double GBPerSec_project_wrong_parchange_lut_chiral_fused     = nbytes_wrong_project / dt_project_parchange_lut_chiral_fused / 1e9;
-  std::cout << GridLogMessage << nIter << " applications of blockProject_parchange_lut_chiral_fused" << std::endl;
-  std::cout << GridLogMessage << "    Time to complete            : " << dt_project_parchange_lut_chiral_fused << " s" << std::endl;
-  std::cout << GridLogMessage << "    Total performance           : " << GFlopsPerSec_project_parchange_lut_chiral_fused << " GFlops/s" << std::endl;
-  std::cout << GridLogMessage << "    Effective memory bandwidth  : " << GBPerSec_project_parchange_lut_chiral_fused << " GB/s" << std::endl;
-  std::cout << GridLogMessage << "    Wrong     total performance : " << GFlopsPerSec_project_wrong_parchange_lut_chiral_fused << " GFlops/s" << std::endl;
-  std::cout << GridLogMessage << "    Wrong     memory bandwidth  : " << GBPerSec_project_wrong_parchange_lut_chiral_fused << " GB/s" << std::endl << std::endl;
+#undef BENCH_PROJECT_VERSION
+#undef PRINT_PROJECT_VERSION
 
 
-  grid_printf("DONE WITH PROJECT BENCHMARKS in %s precision\n", precision.c_str()); fflush(stdout);
+  grid_printf("DONE WITH PROJECT BENCHMARKS in %s precision\n\n", precision.c_str()); fflush(stdout);
+
+
+  // performance figures promote
+  double promote_flops_per_site = fine_complex * nsingle * flops_per_cmul + fine_complex * (nsingle - 1) * flops_per_cadd;
+  double flops_promote          = promote_flops_per_site * UGrid_f->gSites() * nIter;
+  double nbytes_promote         = (((nsingle + 1) * fine_floats) * UGrid_f->gSites()
+                                + coarse_floats * UGrid_c->gSites())
+                                * prec_bytes * nIter;
+  double flops_wrong_promote    = 2 * (promote_flops_per_site + fine_complex) * UGrid_f->gSites() * nIter;
+  double nbytes_wrong_promote   = (((nbasis + 1) * fine_floats) * UGrid_f->gSites() // nsingle*fine_floats times more per site
+                                + coarse_floats * UGrid_c->gSites())
+                                * prec_bytes * nIter;
+  double flops_mgbench_promote  = (8 * (nbasis - 1) + 6) * fine_complex * UGrid_f->gSites() * nIter;
+  double nbytes_mgbench_promote = ((1 * 1 + 3 * fine_complex) * (nbasis - 1) + (1 * 1 + 2 * fine_complex) * 1) * UGrid_f->gSites()
+                                * 2 * prec_bytes * nIter;
+
+  // report calculated performance figures per site
+  std::cout << GridLogMessage << "Promote: Minimal per site: flops, words, bytes, flops/bytes: " << promote_flops_per_site << " " << nbytes_promote / factor << " " << flops_promote/nbytes_promote<< std::endl;
+  std::cout << GridLogMessage << "Promote: Wrong   per site: flops, words, bytes, flops/bytes: " << 2 * (promote_flops_per_site + fine_complex) << " " << nbytes_wrong_promote / factor << " " << flops_wrong_promote/nbytes_wrong_promote << std::endl;
+  std::cout << GridLogMessage << "Promote: MGBENCH per site: flops, words, bytes, flops/bytes: " << (8 * (nbasis - 1) + 6) * fine_complex << " " << nbytes_mgbench_promote / factor << " " << flops_mgbench_promote/nbytes_mgbench_promote << std::endl;
+
+#define BENCH_PROMOTE_VERSION(VERSION, ...)\
+  double secs_promote_##VERSION;\
+  {\
+    grid_printf("warmup %s %s\n", #VERSION, precision.c_str()); fflush(stdout);\
+    for(auto n : {1, 2, 3, 4, 5}) blockPromote_##VERSION(src_c, res_f_##VERSION, __VA_ARGS__);\
+    grid_printf("measurement %s %s\n", #VERSION, precision.c_str()); fflush(stdout);\
+    double t0 = usecond();\
+    for(int n = 0; n < nIter; n++) blockPromote_##VERSION(src_c, res_f_##VERSION, __VA_ARGS__);\
+    double t1 = usecond();\
+    secs_promote_##VERSION = (t1-t0)/1e6;\
+    assert(resultsAgree(res_f_griddefault, res_f_##VERSION, #VERSION));\
+  }
+
+#define PRINT_PROMOTE_VERSION(VERSION) {\
+  double GFlopsPerSec_promote_##VERSION       = flops_promote / secs_promote_##VERSION / 1e9;\
+  double GBPerSec_promote_##VERSION           = nbytes_promote / secs_promote_##VERSION / 1e9;\
+  double GFlopsPerSec_promote_wrong_##VERSION = flops_wrong_promote / secs_promote_##VERSION / 1e9;\
+  double GBPerSec_promote_wrong_##VERSION     = nbytes_wrong_promote / secs_promote_##VERSION / 1e9;\
+  std::cout << GridLogMessage << nIter << " applications of blockPromote_" << #VERSION << std::endl;\
+  std::cout << GridLogMessage << "    Time to complete            : " << secs_promote_##VERSION << " s" << std::endl;\
+  std::cout << GridLogMessage << "    Total performance           : " << GFlopsPerSec_promote_##VERSION << " GFlops/s" << std::endl;\
+  std::cout << GridLogMessage << "    Effective memory bandwidth  : " << GBPerSec_promote_##VERSION << " GB/s" << std::endl;\
+  std::cout << GridLogMessage << "    Wrong     total performance : " << GFlopsPerSec_promote_wrong_##VERSION << " GFlops/s" << std::endl;\
+  std::cout << GridLogMessage << "    Wrong     memory bandwidth  : " << GBPerSec_promote_wrong_##VERSION << " GB/s" << std::endl << std::endl;\
+}
+
+  BENCH_PROMOTE_VERSION(griddefault, basis_normal);                    PRINT_PROMOTE_VERSION(griddefault);
+  // BENCH_PROMOTE_VERSION(parchange, basis_normal);                      PRINT_PROMOTE_VERSION(parchange);
+  // BENCH_PROMOTE_VERSION(parchange_lut, basis_normal, lut);             PRINT_PROMOTE_VERSION(parchange_lut);
+  // BENCH_PROMOTE_VERSION(parchange_chiral, basis_single);               PRINT_PROMOTE_VERSION(parchange_chiral);
+  // BENCH_PROMOTE_VERSION(parchange_lut_chiral, basis_single, lut);      PRINT_PROMOTE_VERSION(parchange_lut_chiral);
+  // // BENCH_PROMOTE_VERSION(parchange_lut_chiral_fused, basis_fused, lut); PRINT_PROMOTE_VERSION(parchange_lut_chiral_fused);
+  // BENCH_PROMOTE_VERSION(parchange_play, basis_normal, lut);            PRINT_PROMOTE_VERSION(parchange_play);
+
+#undef BENCH_PROMOTE_VERSION
+#undef PRINT_PROMOTE_VERSION
+
+  grid_printf("DONE WITH PROMOTE BENCHMARKS in %s precision\n\n", precision.c_str()); fflush(stdout);
   grid_printf("finalize %s\n", precision.c_str()); fflush(stdout);
 }
 
