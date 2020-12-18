@@ -642,6 +642,113 @@ inline void blockPromote_griddefault(const Lattice<iVector<CComplex, nbasis>>& c
 }
 
 
+template<class vobj,class CComplex,int nbasis,class VLattice>
+inline void blockPromote_parchange(const Lattice<iVector<CComplex, nbasis>>& coarseData,
+                                         Lattice<vobj>&                      fineData,
+                                   const VLattice&                           Basis) {
+  GridBase *fine   = fineData.Grid();
+  GridBase *coarse = coarseData.Grid();
+
+  int _ndimension = coarse->_ndimension;
+
+  // checks
+  assert(nbasis == Basis.size());
+  subdivides(coarse, fine);
+  for(int i = 0; i < nbasis; i++) {
+    conformable(Basis[i], fineData);
+  }
+
+  Coordinate block_r(_ndimension);
+  Coordinate fine_rdimensions   = fine->_rdimensions;
+  Coordinate coarse_rdimensions = coarse->_rdimensions;
+
+  size_t block_v = 1;
+  for(int d = 0; d < _ndimension; ++d) {
+    block_r[d] = fine->_rdimensions[d] / coarse->_rdimensions[d];
+    assert(block_r[d] * coarse->_rdimensions[d] == fine->_rdimensions[d]);
+    block_v *= block_r[d];
+  }
+  assert(block_v == fine->oSites() / coarse->oSites());
+
+  autoView(coarseData_v, coarseData, AcceleratorRead);
+  autoView(fineData_v, fineData, AcceleratorWrite);
+
+  typedef decltype(Basis[0].View(AcceleratorRead)) View;
+  Vector<View> Basis_v; Basis_v.reserve(Basis.size());
+  for(int i=0;i<Basis.size();i++){
+    Basis_v.push_back(Basis[i].View(AcceleratorRead));
+  }
+
+  long fine_osites = fine->oSites();
+
+  accelerator_for(sf, fine_osites, vobj::Nsimd(), {
+    int sc;
+
+    Coordinate coor_c(_ndimension);
+    Coordinate coor_f(_ndimension);
+
+    Lexicographic::CoorFromIndex(coor_f, sf, fine_rdimensions);
+    for(int d = 0; d < _ndimension; ++d) coor_c[d] = coor_f[d] / block_r[d];
+    Lexicographic::IndexFromCoor(coor_c, sc, coarse_rdimensions);
+
+    decltype(coalescedRead(fineData_v[0])) fineData_t;
+    for(int i=0; i<nbasis; ++i) {
+      if(i == 0)
+        fineData_t =              coarseData_v(sc)(i) * Basis_v[i](sf);
+      else
+        fineData_t = fineData_t + coarseData_v(sc)(i) * Basis_v[i](sf);
+    }
+    coalescedWrite(fineData_v[sf], fineData_t);
+  });
+
+  for(int i=0;i<Basis.size();i++) Basis_v[i].ViewClose();
+}
+
+
+template<class vobj,class CComplex,int nbasis,class VLattice,class ScalarField>
+inline void blockPromote_parchange_lut(const Lattice<iVector<CComplex, nbasis>>& coarseData,
+                                             Lattice<vobj>&                      fineData,
+                                       const VLattice&                           Basis,
+                                             CoarseningLookupTable<ScalarField>& lut)
+{
+  GridBase *fine   = fineData.Grid();
+  GridBase *coarse = coarseData.Grid();
+
+  // checks
+  assert(fine->_ndimension == coarse->_ndimension);
+  for(int i = 0; i < nbasis; i++) {conformable(Basis[i], fineData);}
+  assert(nbasis == Basis.size());
+  assert(lut.gridsMatch(coarse, fine));
+
+  auto rlut_v = lut.ReverseView();
+  autoView(coarseData_v, coarseData, AcceleratorRead);
+  autoView(fineData_v, fineData, AcceleratorWrite);
+
+  typedef decltype(Basis[0].View(AcceleratorRead)) View;
+  Vector<View> Basis_v; Basis_v.reserve(Basis.size());
+  for(int i=0;i<Basis.size();i++){
+    Basis_v.push_back(Basis[i].View(AcceleratorRead));
+  }
+
+  long fine_osites = fine->oSites();
+
+  accelerator_for(sf, fine_osites, vobj::Nsimd(), {
+    int sc = rlut_v[sf];
+
+    decltype(coalescedRead(fineData_v[0])) fineData_t;
+    for(int i=0; i<nbasis; ++i) {
+      if(i == 0)
+        fineData_t =              coarseData_v(sc)(i) * Basis_v[i](sf);
+      else
+        fineData_t = fineData_t + coarseData_v(sc)(i) * Basis_v[i](sf);
+    }
+    coalescedWrite(fineData_v[sf], fineData_t);
+  });
+
+  for(int i=0;i<Basis.size();i++) Basis_v[i].ViewClose();
+}
+
+
 template<typename vCoeff_t>
 void runBenchmark(int* argc, char*** argv) {
   // precision
@@ -849,8 +956,8 @@ void runBenchmark(int* argc, char*** argv) {
 }
 
   BENCH_PROMOTE_VERSION(griddefault, basis_normal);                    PRINT_PROMOTE_VERSION(griddefault);
-  // BENCH_PROMOTE_VERSION(parchange, basis_normal);                      PRINT_PROMOTE_VERSION(parchange);
-  // BENCH_PROMOTE_VERSION(parchange_lut, basis_normal, lut);             PRINT_PROMOTE_VERSION(parchange_lut);
+  BENCH_PROMOTE_VERSION(parchange, basis_normal);                      PRINT_PROMOTE_VERSION(parchange);
+  BENCH_PROMOTE_VERSION(parchange_lut, basis_normal, lut);             PRINT_PROMOTE_VERSION(parchange_lut);
   // BENCH_PROMOTE_VERSION(parchange_chiral, basis_single);               PRINT_PROMOTE_VERSION(parchange_chiral);
   // BENCH_PROMOTE_VERSION(parchange_lut_chiral, basis_single, lut);      PRINT_PROMOTE_VERSION(parchange_lut_chiral);
   // // BENCH_PROMOTE_VERSION(parchange_lut_chiral_fused, basis_fused, lut); PRINT_PROMOTE_VERSION(parchange_lut_chiral_fused);
@@ -858,6 +965,7 @@ void runBenchmark(int* argc, char*** argv) {
 
 #undef BENCH_PROMOTE_VERSION
 #undef PRINT_PROMOTE_VERSION
+
 
   grid_printf("DONE WITH PROMOTE BENCHMARKS in %s precision\n\n", precision.c_str()); fflush(stdout);
   grid_printf("finalize %s\n", precision.c_str()); fflush(stdout);
