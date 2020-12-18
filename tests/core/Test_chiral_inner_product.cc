@@ -373,6 +373,7 @@ inline void blockProject_parchange(Lattice<iVector<CComplex, nbasis>>& coarseDat
   for(int i=0;i<Basis.size();i++){
     Basis_v.push_back(Basis[i].View(AcceleratorRead));
   }
+  View* Basis_p = &Basis_v[0];
 
   long coarse_osites = coarse->oSites();
 
@@ -384,7 +385,7 @@ inline void blockProject_parchange(Lattice<iVector<CComplex, nbasis>>& coarseDat
     Lexicographic::CoorFromIndex(coor_c, sc, coarse_rdimensions);
 
     int sf;
-    decltype(INNER_PRODUCT(Basis_v[0](0), fineData_v(0))) reduce = Zero();
+    decltype(INNER_PRODUCT(Basis_p[0](0), fineData_v(0))) reduce = Zero();
 
     for(int sb = 0; sb < block_v; ++sb) {
       Coordinate coor_b(_ndimension);
@@ -394,7 +395,7 @@ inline void blockProject_parchange(Lattice<iVector<CComplex, nbasis>>& coarseDat
       for(int d = 0; d < _ndimension; ++d) coor_f[d] = coor_c[d] * block_r[d] + coor_b[d];
       Lexicographic::IndexFromCoor(coor_f, sf, fine_rdimensions);
 
-      reduce = reduce + INNER_PRODUCT(Basis_v[i](sf), fineData_v(sf));
+      reduce = reduce + INNER_PRODUCT(Basis_p[i](sf), fineData_v(sf));
     }
     convertType(coarseData_v[sc](i), TensorRemove(reduce));
   });
@@ -428,6 +429,7 @@ inline void blockProject_parchange_lut(Lattice<iVector<CComplex, nbasis>>& coars
   for(int i=0;i<Basis.size();i++){
     Basis_v.push_back(Basis[i].View(AcceleratorRead));
   }
+  View* Basis_p = &Basis_v[0];
 
   long coarse_osites = coarse->oSites();
 
@@ -435,11 +437,11 @@ inline void blockProject_parchange_lut(Lattice<iVector<CComplex, nbasis>>& coars
     auto i  = sci % nbasis;
     auto sc = sci / nbasis;
 
-    decltype(INNER_PRODUCT(Basis_v[0](0), fineData_v(0))) reduce = Zero();
+    decltype(INNER_PRODUCT(Basis_p[0](0), fineData_v(0))) reduce = Zero();
 
     for(int j=0; j<sizes_v[sc]; ++j) {
       int sf = lut_v[sc][j];
-      reduce = reduce + INNER_PRODUCT(Basis_v[i](sf), fineData_v(sf));
+      reduce = reduce + INNER_PRODUCT(Basis_p[i](sf), fineData_v(sf));
     }
     convertType(coarseData_v[sc](i), TensorRemove(reduce));
   });
@@ -489,6 +491,7 @@ inline void blockProject_parchange_chiral(Lattice<iVector<CComplex,nbasis > >& c
   for(int i=0;i<Basis.size();i++){
     Basis_v.push_back(Basis[i].View(AcceleratorRead));
   }
+  View* Basis_p = &Basis_v[0];
 
   long coarse_osites = coarse->oSites();
 
@@ -502,7 +505,7 @@ inline void blockProject_parchange_chiral(Lattice<iVector<CComplex,nbasis > >& c
     Lexicographic::CoorFromIndex(coor_c, sc, coarse_rdimensions);
 
     int sf;
-    decltype(INNER_PRODUCT_UPPER_PART(Basis_v[0](0), fineData_v(0))) reduce = Zero();
+    decltype(INNER_PRODUCT_UPPER_PART(Basis_p[0](0), fineData_v(0))) reduce = Zero();
 
     auto coarse_i_offset = chirality * nvectors;
 
@@ -515,9 +518,9 @@ inline void blockProject_parchange_chiral(Lattice<iVector<CComplex,nbasis > >& c
       Lexicographic::IndexFromCoor(coor_f, sf, fine_rdimensions);
 
       if (chirality == 0)
-        reduce = reduce + INNER_PRODUCT_UPPER_PART(Basis_v[basis_i](sf), fineData_v(sf));
+        reduce = reduce + INNER_PRODUCT_UPPER_PART(Basis_p[basis_i](sf), fineData_v(sf));
       else if (chirality == 1)
-        reduce = reduce + INNER_PRODUCT_LOWER_PART(Basis_v[basis_i](sf), fineData_v(sf));
+        reduce = reduce + INNER_PRODUCT_LOWER_PART(Basis_p[basis_i](sf), fineData_v(sf));
       else
         assert(0);
     }
@@ -556,6 +559,7 @@ inline void blockProject_parchange_lut_chiral(Lattice<iVector<CComplex, nbasis>>
   for(int i=0;i<Basis.size();i++){
     Basis_v.push_back(Basis[i].View(AcceleratorRead));
   }
+  View* Basis_p = &Basis_v[0];
 
   long coarse_osites = coarse->oSites();
 
@@ -567,14 +571,14 @@ inline void blockProject_parchange_lut_chiral(Lattice<iVector<CComplex, nbasis>>
 
     auto coarse_i_offset = chirality * nvectors;
 
-    decltype(INNER_PRODUCT_UPPER_PART(Basis_v[0](0), fineData_v(0))) reduce = Zero();
+    decltype(INNER_PRODUCT_UPPER_PART(Basis_p[0](0), fineData_v(0))) reduce = Zero();
 
     for(int j=0; j<sizes_v[sc]; ++j) {
       int sf = lut_v[sc][j];
       if (chirality == 0)
-        reduce = reduce + INNER_PRODUCT_UPPER_PART(Basis_v[basis_i](sf), fineData_v(sf));
+        reduce = reduce + INNER_PRODUCT_UPPER_PART(Basis_p[basis_i](sf), fineData_v(sf));
       else if (chirality == 1)
-        reduce = reduce + INNER_PRODUCT_LOWER_PART(Basis_v[basis_i](sf), fineData_v(sf));
+        reduce = reduce + INNER_PRODUCT_LOWER_PART(Basis_p[basis_i](sf), fineData_v(sf));
       else
         assert(0);
     }
@@ -678,6 +682,7 @@ inline void blockPromote_parchange(const Lattice<iVector<CComplex, nbasis>>& coa
   for(int i=0;i<Basis.size();i++){
     Basis_v.push_back(Basis[i].View(AcceleratorRead));
   }
+  View* Basis_p = &Basis_v[0];
 
   long fine_osites = fine->oSites();
 
@@ -694,9 +699,9 @@ inline void blockPromote_parchange(const Lattice<iVector<CComplex, nbasis>>& coa
     decltype(coalescedRead(fineData_v[0])) fineData_t;
     for(int i=0; i<nbasis; ++i) {
       if(i == 0)
-        fineData_t =              coarseData_v(sc)(i) * Basis_v[i](sf);
+        fineData_t =              coarseData_v(sc)(i) * Basis_p[i](sf);
       else
-        fineData_t = fineData_t + coarseData_v(sc)(i) * Basis_v[i](sf);
+        fineData_t = fineData_t + coarseData_v(sc)(i) * Basis_p[i](sf);
     }
     coalescedWrite(fineData_v[sf], fineData_t);
   });
@@ -729,6 +734,7 @@ inline void blockPromote_parchange_lut(const Lattice<iVector<CComplex, nbasis>>&
   for(int i=0;i<Basis.size();i++){
     Basis_v.push_back(Basis[i].View(AcceleratorRead));
   }
+  View* Basis_p = &Basis_v[0];
 
   long fine_osites = fine->oSites();
 
@@ -738,9 +744,9 @@ inline void blockPromote_parchange_lut(const Lattice<iVector<CComplex, nbasis>>&
     decltype(coalescedRead(fineData_v[0])) fineData_t;
     for(int i=0; i<nbasis; ++i) {
       if(i == 0)
-        fineData_t =              coarseData_v(sc)(i) * Basis_v[i](sf);
+        fineData_t =              coarseData_v(sc)(i) * Basis_p[i](sf);
       else
-        fineData_t = fineData_t + coarseData_v(sc)(i) * Basis_v[i](sf);
+        fineData_t = fineData_t + coarseData_v(sc)(i) * Basis_p[i](sf);
     }
     coalescedWrite(fineData_v[sf], fineData_t);
   });
