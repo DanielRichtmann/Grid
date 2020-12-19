@@ -844,6 +844,8 @@ inline void blockProject_parchange_finegrained_chiral(Lattice<iVector<CComplex,n
     auto chirality = idx % nchiralities; idx  /= nchiralities;
     auto sc        = idx % coarse_osites; idx /= coarse_osites;
 
+    assert(chirality == 0 || chirality == 1);
+
     Coordinate coor_c(_ndimension);
     Lexicographic::CoorFromIndex(coor_c, sc, coarse_rdimensions);
 
@@ -862,10 +864,8 @@ inline void blockProject_parchange_finegrained_chiral(Lattice<iVector<CComplex,n
 
       if (chirality == 0)
         reduce = reduce + INNER_PRODUCT_UPPER_PART(Basis_p[basis_i](sf), fineData_v(sf));
-      else if (chirality == 1)
-        reduce = reduce + INNER_PRODUCT_LOWER_PART(Basis_p[basis_i](sf), fineData_v(sf));
       else
-        assert(0);
+        reduce = reduce + INNER_PRODUCT_LOWER_PART(Basis_p[basis_i](sf), fineData_v(sf));
     }
     convertType(coarseData_v[sc](coarse_i_offset + basis_i), TensorRemove(reduce));
   });
@@ -912,6 +912,8 @@ inline void blockProject_parchange_finegrained_lut_chiral(Lattice<iVector<CCompl
     auto chirality = idx % nchiralities; idx  /= nchiralities;
     auto sc        = idx % coarse_osites; idx /= coarse_osites;
 
+    assert(chirality == 0 || chirality == 1);
+
     auto coarse_i_offset = chirality * nvectors;
 
     decltype(INNER_PRODUCT_UPPER_PART(Basis_p[0](0), fineData_v(0))) reduce = Zero();
@@ -920,10 +922,8 @@ inline void blockProject_parchange_finegrained_lut_chiral(Lattice<iVector<CCompl
       int sf = lut_v[sc][j];
       if (chirality == 0)
         reduce = reduce + INNER_PRODUCT_UPPER_PART(Basis_p[basis_i](sf), fineData_v(sf));
-      else if (chirality == 1)
-        reduce = reduce + INNER_PRODUCT_LOWER_PART(Basis_p[basis_i](sf), fineData_v(sf));
       else
-        assert(0);
+        reduce = reduce + INNER_PRODUCT_LOWER_PART(Basis_p[basis_i](sf), fineData_v(sf));
     }
     convertType(coarseData_v[sc](coarse_i_offset + basis_i), TensorRemove(reduce));
   });
@@ -963,6 +963,8 @@ inline void blockProject_parchange_finegrained_lut_chiral_fused(Lattice<iVector<
     auto chirality = idx % nchiralities; idx  /= nchiralities;
     auto sc        = idx % coarse_osites; idx /= coarse_osites;
 
+    assert(chirality == 0 || chirality == 1);
+
     auto coarse_i_offset = chirality * nvectors;
 
     decltype(INNER_PRODUCT_UPPER_PART(coalescedRead(projector_v[0](0)), fineData_v(0))) reduce = Zero();
@@ -971,14 +973,13 @@ inline void blockProject_parchange_finegrained_lut_chiral_fused(Lattice<iVector<
       int sf = lut_v[sc][j];
       if (chirality == 0)
         reduce = reduce + INNER_PRODUCT_UPPER_PART(coalescedRead(projector_v[sf](basis_i)), fineData_v(sf));
-      else if (chirality == 1)
-        reduce = reduce + INNER_PRODUCT_LOWER_PART(coalescedRead(projector_v[sf](basis_i)), fineData_v(sf));
       else
-        assert(0);
+        reduce = reduce + INNER_PRODUCT_LOWER_PART(coalescedRead(projector_v[sf](basis_i)), fineData_v(sf));
     }
     convertType(coarseData_v[sc](coarse_i_offset + basis_i), TensorRemove(reduce));
   });
 }
+#endif
 
 
 template<class vobj,class CComplex,int nbasis,class VLattice>
