@@ -679,7 +679,8 @@ inline void blockProject_parchange_lut_fused(Lattice<iVector<CComplex, nbasis>>&
 }
 
 
-template<class vobj,class CComplex,int nbasis,typename std::enable_if<nbasis%2==0,void>::type* = nullptr>
+// template<class vobj,class CComplex,int nbasis,typename std::enable_if<nbasis%2==0,void>::type* = nullptr> // nvcc doesn't like this
+template<class vobj,class CComplex,int nbasis>
 inline void blockProject_parchange_chiral_fused(Lattice<iVector<CComplex,nbasis > >&   coarseData,
                                                 const Lattice<vobj>&                   fineData,
                                                 const Lattice<iVector<vobj,nbasis/2>>& projector)
@@ -745,7 +746,8 @@ inline void blockProject_parchange_chiral_fused(Lattice<iVector<CComplex,nbasis 
 }
 
 
-template<class vobj,class CComplex,int nbasis,class ScalarField,typename std::enable_if<nbasis%2==0,void>::type* = nullptr>
+// template<class vobj,class CComplex,int nbasis,class ScalarField,typename std::enable_if<nbasis%2==0,void>::type* = nullptr> // nvcc doesn't like this
+template<class vobj,class CComplex,int nbasis,class ScalarField>
 inline void blockProject_parchange_lut_chiral_fused(Lattice<iVector<CComplex, nbasis>>&     coarseData,
                                                     const Lattice<vobj>&                    fineData,
                                                     const Lattice<iVector<vobj, nbasis/2>>& projector,
@@ -1235,7 +1237,8 @@ inline void blockProject_parchange_finegrained_lut_fused(Lattice<iVector<CComple
 }
 
 
-template<class vobj,class CComplex,int nbasis,typename std::enable_if<nbasis%2==0,void>::type* = nullptr>
+// template<class vobj,class CComplex,int nbasis,typename std::enable_if<nbasis%2==0,void>::type* = nullptr> // nvcc doesn't like this
+template<class vobj,class CComplex,int nbasis>
 inline void blockProject_parchange_finegrained_chiral_fused(Lattice<iVector<CComplex,nbasis > >&   coarseData,
                                                             const Lattice<vobj>&                   fineData,
                                                             const Lattice<iVector<vobj,nbasis/2>>& projector)
@@ -1306,7 +1309,8 @@ inline void blockProject_parchange_finegrained_chiral_fused(Lattice<iVector<CCom
 }
 
 
-template<class vobj,class CComplex,int nbasis,class ScalarField,typename std::enable_if<nbasis%2==0,void>::type* = nullptr>
+// template<class vobj,class CComplex,int nbasis,class ScalarField,typename std::enable_if<nbasis%2==0,void>::type* = nullptr> // nvcc doesn't like this
+template<class vobj,class CComplex,int nbasis,class ScalarField>
 inline void blockProject_parchange_finegrained_lut_chiral_fused(Lattice<iVector<CComplex, nbasis>>&     coarseData,
                                                                 const Lattice<vobj>&                    fineData,
                                                                 const Lattice<iVector<vobj, nbasis/2>>& projector,
@@ -1354,7 +1358,6 @@ inline void blockProject_parchange_finegrained_lut_chiral_fused(Lattice<iVector<
     convertType(coarseData_v[sc](coarse_i_offset + basis_i), TensorRemove(reduce));
   });
 }
-#endif
 
 
 template<class vobj,class CComplex,int nbasis,class VLattice>
