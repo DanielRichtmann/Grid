@@ -61,6 +61,45 @@ using namespace Grid;
 #endif
 
 
+template<int lohi,typename vobj,typename std::enable_if<isGridFundamental<vobj>::value && (lohi == 0 || lohi == 1),void>::type* = nullptr>
+accelerator_inline auto loadChirality(const iSpinColourVector<vobj>& in) -> iScalar<iVector<decltype(coalescedRead(in._internal._internal[0])), Nhs>> {
+  iScalar<iVector<decltype(coalescedRead(in._internal._internal[0])), Nhs>> ret;
+
+  constexpr int s_offset = lohi * 2;
+
+  for(int s=0; s <Nhs; s++)
+    ret()(s) = coalescedRead(in()(s_offset + s));
+
+  return ret;
+}
+template<int lohi,typename vobj,int nbasis,typename std::enable_if<isGridFundamental<vobj>::value && (lohi == 0 || lohi == 1) && nbasis%2==0,void>::type* = nullptr>
+accelerator_inline auto loadChirality(const iVector<iSinglet<vobj>,nbasis>& in) -> iVector<decltype(coalescedRead(in._internal[0])),nbasis/2> {
+  iVector<decltype(coalescedRead(in._internal[0])),nbasis/2> ret;
+
+  constexpr int nsingle = nbasis/2;
+  constexpr int n_offset = lohi*nsingle;
+
+  for(int n=0; n<nsingle; n++)
+    ret(n) = coalescedRead(in(n + n_offset));
+
+  return ret;
+}
+
+template<int lohi,typename vobj,typename vsobj,typename std::enable_if<isGridFundamental<vobj>::value && (lohi == 0 || lohi == 1),void>::type* = nullptr>
+accelerator_inline void writeChirality(iSpinColourVector<vobj>& out, const iHalfSpinColourVector<vsobj>& in) {
+  constexpr int s_offset = lohi * 2;
+
+  for(int s=0; s <Nhs; s++)
+    coalescedWrite(out()(s_offset + s), in()(s));
+}
+template<int lohi,typename vobj,int nbasis,typename vsobj,typename std::enable_if<isGridFundamental<vobj>::value && (lohi == 0 || lohi == 1) && nbasis%2==0,void>::type* = nullptr>
+accelerator_inline void writeChirality(iVector<iSinglet<vobj>,nbasis>& out, const iVector<iSinglet<vsobj>,nbasis/2>& in) {
+  constexpr int nsingle = nbasis/2;
+  constexpr int n_offset = lohi*nsingle;
+
+  for(int n=0; n<nsingle; n++)
+    coalescedWrite(out(n_offset + n), in(n));
+}
 template<class ScalarField>
 class CoarseningLookupTable {
 public:
@@ -1418,16 +1457,12 @@ inline void blockPromote_parchange(const Lattice<iVector<CComplex, nbasis>>& coa
     for(int d = 0; d < _ndimension; ++d) coor_c[d] = coor_f[d] / block_r[d];
     Lexicographic::IndexFromCoor(coor_c, sc, coarse_rdimensions);
 
-    decltype(coalescedRead(fineData_v[0])) fineData_t;
+    decltype(coalescedRead(fineData_v[0])) fineData_t = Zero();
     for(int i=0; i<nbasis; ++i) {
-      if(i == 0)
-        fineData_t =              coarseData_v(sc)(i) * Basis_p[i](sf);
-      else
-        fineData_t = fineData_t + coarseData_v(sc)(i) * Basis_p[i](sf);
+      fineData_t = fineData_t + coarseData_v(sc)(i) * Basis_p[i](sf);
     }
     coalescedWrite(fineData_v[sf], fineData_t);
   });
-
   for(int i=0;i<Basis.size();i++) Basis_v[i].ViewClose();
 }
 
@@ -1463,17 +1498,321 @@ inline void blockPromote_parchange_lut(const Lattice<iVector<CComplex, nbasis>>&
   accelerator_for(sf, fine_osites, vobj::Nsimd(), {
     int sc = rlut_v[sf];
 
-    decltype(coalescedRead(fineData_v[0])) fineData_t;
+    decltype(coalescedRead(fineData_v[0])) fineData_t = Zero();
     for(int i=0; i<nbasis; ++i) {
-      if(i == 0)
-        fineData_t =              coarseData_v(sc)(i) * Basis_p[i](sf);
-      else
-        fineData_t = fineData_t + coarseData_v(sc)(i) * Basis_p[i](sf);
+      fineData_t = fineData_t + coarseData_v(sc)(i) * Basis_p[i](sf);
     }
     coalescedWrite(fineData_v[sf], fineData_t);
   });
 
   for(int i=0;i<Basis.size();i++) Basis_v[i].ViewClose();
+}
+
+
+// template<class vobj,class CComplex,int nbasis,typename std::enable_if<nbasis%2==0,void>::type* = nullptr> // nvcc doesn't like this
+template<class vobj,class CComplex,int nbasis,class VLattice>
+inline void blockPromote_parchange_chiral(const Lattice<iVector<CComplex, nbasis>>& coarseData,
+                                                Lattice<vobj>&                      fineData,
+                                          const VLattice&                           Basis)
+{
+  static_assert(nbasis%2 == 0, "Wrong basis size");
+  const int nchiralities = 2;
+  const int nvectors = nbasis/nchiralities;
+
+  GridBase *fine   = fineData.Grid();
+  GridBase *coarse = coarseData.Grid();
+
+  int _ndimension = coarse->_ndimension;
+
+  // checks
+  assert(nvectors == Basis.size());
+  subdivides(coarse, fine);
+  for(int i = 0; i < nvectors; i++) {
+    conformable(Basis[i], fineData);
+  }
+
+  Coordinate block_r(_ndimension);
+  Coordinate fine_rdimensions   = fine->_rdimensions;
+  Coordinate coarse_rdimensions = coarse->_rdimensions;
+
+  size_t block_v = 1;
+  for(int d = 0; d < _ndimension; ++d) {
+    block_r[d] = fine->_rdimensions[d] / coarse->_rdimensions[d];
+    assert(block_r[d] * coarse->_rdimensions[d] == fine->_rdimensions[d]);
+    block_v *= block_r[d];
+  }
+  assert(block_v == fine->oSites() / coarse->oSites());
+
+  autoView(coarseData_v, coarseData, AcceleratorRead);
+  autoView(fineData_v, fineData, AcceleratorWrite);
+
+  typedef decltype(Basis[0].View(AcceleratorRead)) View;
+  Vector<View> Basis_v; Basis_v.reserve(Basis.size());
+  for(int i=0;i<Basis.size();i++){
+    Basis_v.push_back(Basis[i].View(AcceleratorRead));
+  }
+  View* Basis_p = &Basis_v[0];
+
+  long fine_osites = fine->oSites();
+
+  accelerator_for(sf, fine_osites, vobj::Nsimd(), {
+    int sc;
+
+    Coordinate coor_c(_ndimension);
+    Coordinate coor_f(_ndimension);
+
+    Lexicographic::CoorFromIndex(coor_f, sf, fine_rdimensions);
+    for(int d = 0; d < _ndimension; ++d) coor_c[d] = coor_f[d] / block_r[d];
+    Lexicographic::IndexFromCoor(coor_c, sc, coarse_rdimensions);
+
+    decltype(loadChirality<0>(fineData_v[0])) fineDataUpper_t = Zero();
+    decltype(loadChirality<1>(fineData_v[0])) fineDataLower_t = Zero();
+    for(int i=0; i<nvectors; ++i) {
+      fineDataUpper_t = fineDataUpper_t + coarseData_v(sc)(i + 0 * nvectors) * loadChirality<0>(Basis_p[i][sf]);
+      fineDataLower_t = fineDataLower_t + coarseData_v(sc)(i + 1 * nvectors) * loadChirality<1>(Basis_p[i][sf]);
+    }
+    writeChirality<0>(fineData_v[sf], fineDataUpper_t);
+    writeChirality<1>(fineData_v[sf], fineDataLower_t);
+  });
+  for(int i=0;i<Basis.size();i++) Basis_v[i].ViewClose();
+}
+
+
+template<class vobj,class CComplex,int nbasis>
+inline void blockPromote_parchange_fused(const Lattice<iVector<CComplex, nbasis>>& coarseData,
+                                               Lattice<vobj>&                      fineData,
+                                         const Lattice<iVector<vobj, nbasis>>&     projector) {
+  GridBase *fine   = fineData.Grid();
+  GridBase *coarse = coarseData.Grid();
+
+  int _ndimension = coarse->_ndimension;
+
+  // checks
+  assert(fine->_ndimension == coarse->_ndimension);
+  subdivides(coarse, fine);
+  conformable(projector, fineData);
+
+  Coordinate block_r(_ndimension);
+  Coordinate fine_rdimensions   = fine->_rdimensions;
+  Coordinate coarse_rdimensions = coarse->_rdimensions;
+
+  size_t block_v = 1;
+  for(int d = 0; d < _ndimension; ++d) {
+    block_r[d] = fine->_rdimensions[d] / coarse->_rdimensions[d];
+    assert(block_r[d] * coarse->_rdimensions[d] == fine->_rdimensions[d]);
+    block_v *= block_r[d];
+  }
+  assert(block_v == fine->oSites() / coarse->oSites());
+
+  autoView(projector_v, projector, AcceleratorRead);
+  autoView(coarseData_v, coarseData, AcceleratorRead);
+  autoView(fineData_v, fineData, AcceleratorWrite);
+
+  long fine_osites = fine->oSites();
+
+  accelerator_for(sf, fine_osites, vobj::Nsimd(), {
+    int sc;
+
+    Coordinate coor_c(_ndimension);
+    Coordinate coor_f(_ndimension);
+
+    Lexicographic::CoorFromIndex(coor_f, sf, fine_rdimensions);
+    for(int d = 0; d < _ndimension; ++d) coor_c[d] = coor_f[d] / block_r[d];
+    Lexicographic::IndexFromCoor(coor_c, sc, coarse_rdimensions);
+
+    decltype(coalescedRead(fineData_v[0])) fineData_t = Zero();
+    for(int i=0; i<nbasis; ++i) {
+      fineData_t = fineData_t + coarseData_v(sc)(i) * coalescedRead(projector_v[sf](i));
+    }
+    coalescedWrite(fineData_v[sf], fineData_t);
+  });
+}
+
+
+// template<class vobj,class CComplex,int nbasis,typename std::enable_if<nbasis%2==0,void>::type* = nullptr> // nvcc doesn't like this
+template<class vobj,class CComplex,int nbasis,class VLattice,class ScalarField>
+inline void blockPromote_parchange_lut_chiral(const Lattice<iVector<CComplex, nbasis>>& coarseData,
+                                                    Lattice<vobj>&                      fineData,
+                                              const VLattice&                           Basis,
+                                                    CoarseningLookupTable<ScalarField>& lut)
+{
+  static_assert(nbasis%2 == 0, "Wrong basis size");
+  const int nchiralities = 2;
+  const int nvectors = nbasis/nchiralities;
+
+  GridBase *fine   = fineData.Grid();
+  GridBase *coarse = coarseData.Grid();
+
+  int _ndimension = coarse->_ndimension;
+
+  // checks
+  assert(fine->_ndimension == coarse->_ndimension);
+  for(int i = 0; i < nvectors; i++) {conformable(Basis[i], fineData);}
+  assert(nvectors == Basis.size());
+  assert(lut.gridsMatch(coarse, fine));
+
+  auto rlut_v = lut.ReverseView();
+  autoView(coarseData_v, coarseData, AcceleratorRead);
+  autoView(fineData_v, fineData, AcceleratorWrite);
+
+  typedef decltype(Basis[0].View(AcceleratorRead)) View;
+  Vector<View> Basis_v; Basis_v.reserve(Basis.size());
+  for(int i=0;i<Basis.size();i++){
+    Basis_v.push_back(Basis[i].View(AcceleratorRead));
+  }
+  View* Basis_p = &Basis_v[0];
+
+  long fine_osites = fine->oSites();
+
+  accelerator_for(sf, fine_osites, vobj::Nsimd(), {
+    int sc = rlut_v[sf];
+
+    decltype(loadChirality<0>(fineData_v[0])) fineDataUpper_t = Zero();
+    decltype(loadChirality<1>(fineData_v[0])) fineDataLower_t = Zero();
+    for(int i=0; i<nvectors; ++i) {
+      fineDataUpper_t = fineDataUpper_t + coarseData_v(sc)(i + 0 * nvectors) * loadChirality<0>(Basis_p[i][sf]);
+      fineDataLower_t = fineDataLower_t + coarseData_v(sc)(i + 1 * nvectors) * loadChirality<1>(Basis_p[i][sf]);
+    }
+    writeChirality<0>(fineData_v[sf], fineDataUpper_t);
+    writeChirality<1>(fineData_v[sf], fineDataLower_t);
+  });
+  for(int i=0;i<Basis.size();i++) Basis_v[i].ViewClose();
+}
+
+
+template<class vobj,class CComplex,int nbasis,class ScalarField>
+inline void blockPromote_parchange_lut_fused(const Lattice<iVector<CComplex, nbasis>>& coarseData,
+                                                   Lattice<vobj>&                      fineData,
+                                             const Lattice<iVector<vobj,nbasis>>&      projector,
+                                                   CoarseningLookupTable<ScalarField>& lut)
+{
+  GridBase *fine   = fineData.Grid();
+  GridBase *coarse = coarseData.Grid();
+
+  // checks
+  assert(fine->_ndimension == coarse->_ndimension);
+  conformable(projector, fineData);
+  assert(lut.gridsMatch(coarse, fine));
+
+  auto rlut_v = lut.ReverseView();
+  autoView(projector_v, projector, AcceleratorRead);
+  autoView(coarseData_v, coarseData, AcceleratorRead);
+  autoView(fineData_v, fineData, AcceleratorWrite);
+
+  long fine_osites = fine->oSites();
+
+  accelerator_for(sf, fine_osites, vobj::Nsimd(), {
+    int sc = rlut_v[sf];
+
+    decltype(coalescedRead(fineData_v[0])) fineData_t = Zero();
+    for(int i=0; i<nbasis; ++i) {
+      fineData_t = fineData_t + coarseData_v(sc)(i) * coalescedRead(projector_v[sf](i));
+    }
+    coalescedWrite(fineData_v[sf], fineData_t);
+  });
+}
+
+
+// template<class vobj,class CComplex,int nbasis,typename std::enable_if<nbasis%2==0,void>::type* = nullptr> // nvcc doesn't like this
+template<class vobj,class CComplex,int nbasis>
+inline void blockPromote_parchange_chiral_fused(const Lattice<iVector<CComplex, nbasis>>& coarseData,
+                                                      Lattice<vobj>&                      fineData,
+                                                const Lattice<iVector<vobj,nbasis/2>>&    projector)
+{
+  static_assert(nbasis%2 == 0, "Wrong basis size");
+  const int nchiralities = 2;
+  const int nvectors = nbasis/nchiralities;
+
+  GridBase *fine   = fineData.Grid();
+  GridBase *coarse = coarseData.Grid();
+
+  int _ndimension = coarse->_ndimension;
+
+  // checks
+  assert(fine->_ndimension == coarse->_ndimension);
+  subdivides(coarse, fine);
+  conformable(projector, fineData);
+
+  Coordinate block_r(_ndimension);
+  Coordinate fine_rdimensions   = fine->_rdimensions;
+  Coordinate coarse_rdimensions = coarse->_rdimensions;
+
+  size_t block_v = 1;
+  for(int d = 0; d < _ndimension; ++d) {
+    block_r[d] = fine->_rdimensions[d] / coarse->_rdimensions[d];
+    assert(block_r[d] * coarse->_rdimensions[d] == fine->_rdimensions[d]);
+    block_v *= block_r[d];
+  }
+  assert(block_v == fine->oSites() / coarse->oSites());
+
+  autoView(projector_v, projector, AcceleratorRead);
+  autoView(coarseData_v, coarseData, AcceleratorRead);
+  autoView(fineData_v, fineData, AcceleratorWrite);
+
+  long fine_osites = fine->oSites();
+
+  accelerator_for(sf, fine_osites, vobj::Nsimd(), {
+    int sc;
+
+    Coordinate coor_c(_ndimension);
+    Coordinate coor_f(_ndimension);
+
+    Lexicographic::CoorFromIndex(coor_f, sf, fine_rdimensions);
+    for(int d = 0; d < _ndimension; ++d) coor_c[d] = coor_f[d] / block_r[d];
+    Lexicographic::IndexFromCoor(coor_c, sc, coarse_rdimensions);
+
+    decltype(loadChirality<0>(fineData_v[0])) fineDataUpper_t = Zero();
+    decltype(loadChirality<1>(fineData_v[0])) fineDataLower_t = Zero();
+    for(int i=0; i<nvectors; ++i) {
+      fineDataUpper_t = fineDataUpper_t + coarseData_v(sc)(i + 0 * nvectors) * loadChirality<0>(projector_v[sf](i));
+      fineDataLower_t = fineDataLower_t + coarseData_v(sc)(i + 1 * nvectors) * loadChirality<1>(projector_v[sf](i));
+    }
+    writeChirality<0>(fineData_v[sf], fineDataUpper_t);
+    writeChirality<1>(fineData_v[sf], fineDataLower_t);
+  });
+}
+
+
+// template<class vobj,class CComplex,int nbasis,typename std::enable_if<nbasis%2==0,void>::type* = nullptr> // nvcc doesn't like this
+template<class vobj,class CComplex,int nbasis,class ScalarField>
+inline void blockPromote_parchange_lut_chiral_fused(const Lattice<iVector<CComplex, nbasis>>& coarseData,
+                                                          Lattice<vobj>&                      fineData,
+                                                    const Lattice<iVector<vobj,nbasis/2>>&    projector,
+                                                          CoarseningLookupTable<ScalarField>& lut)
+{
+  static_assert(nbasis%2 == 0, "Wrong basis size");
+  const int nchiralities = 2;
+  const int nvectors = nbasis/nchiralities;
+
+  GridBase *fine   = fineData.Grid();
+  GridBase *coarse = coarseData.Grid();
+
+  int _ndimension = coarse->_ndimension;
+
+  // checks
+  assert(fine->_ndimension == coarse->_ndimension);
+  conformable(projector, fineData);
+  assert(lut.gridsMatch(coarse, fine));
+
+  auto rlut_v = lut.ReverseView();
+  autoView(projector_v, projector, AcceleratorRead);
+  autoView(coarseData_v, coarseData, AcceleratorRead);
+  autoView(fineData_v, fineData, AcceleratorWrite);
+
+  long fine_osites = fine->oSites();
+
+  accelerator_for(sf, fine_osites, vobj::Nsimd(), {
+    int sc = rlut_v[sf];
+
+    decltype(loadChirality<0>(fineData_v[0])) fineDataUpper_t = Zero();
+    decltype(loadChirality<1>(fineData_v[0])) fineDataLower_t = Zero();
+    for(int i=0; i<nvectors; ++i) {
+      fineDataUpper_t = fineDataUpper_t + coarseData_v(sc)(i + 0 * nvectors) * loadChirality<0>(projector_v[sf](i));
+      fineDataLower_t = fineDataLower_t + coarseData_v(sc)(i + 1 * nvectors) * loadChirality<1>(projector_v[sf](i));
+    }
+    writeChirality<0>(fineData_v[sf], fineDataUpper_t);
+    writeChirality<1>(fineData_v[sf], fineDataLower_t);
+  });
 }
 
 
@@ -1699,13 +2038,24 @@ void runBenchmark(int* argc, char*** argv) {
   std::cout << GridLogMessage << "    Wrong     memory bandwidth  : " << GBPerSec_promote_wrong_##VERSION << " GB/s" << std::endl << std::endl;\
 }
 
-  BENCH_PROMOTE_VERSION(griddefault, basis_normal);                    PRINT_PROMOTE_VERSION(griddefault);
-  BENCH_PROMOTE_VERSION(parchange, basis_normal);                      PRINT_PROMOTE_VERSION(parchange);
-  BENCH_PROMOTE_VERSION(parchange_lut, basis_normal, lut);             PRINT_PROMOTE_VERSION(parchange_lut);
-  // BENCH_PROMOTE_VERSION(parchange_chiral, basis_single);               PRINT_PROMOTE_VERSION(parchange_chiral);
-  // BENCH_PROMOTE_VERSION(parchange_lut_chiral, basis_single, lut);      PRINT_PROMOTE_VERSION(parchange_lut_chiral);
-  // // BENCH_PROMOTE_VERSION(parchange_lut_chiral_fused, basis_fused, lut); PRINT_PROMOTE_VERSION(parchange_lut_chiral_fused);
-  // BENCH_PROMOTE_VERSION(parchange_play, basis_normal, lut);            PRINT_PROMOTE_VERSION(parchange_play);
+  BENCH_PROMOTE_VERSION(griddefault, basis_normal);                                       PRINT_PROMOTE_VERSION(griddefault);
+  BENCH_PROMOTE_VERSION(parchange, basis_normal);                                         PRINT_PROMOTE_VERSION(parchange);
+  BENCH_PROMOTE_VERSION(parchange_lut, basis_normal, lut);                                PRINT_PROMOTE_VERSION(parchange_lut);
+  BENCH_PROMOTE_VERSION(parchange_chiral, basis_single);                                  PRINT_PROMOTE_VERSION(parchange_chiral);
+  BENCH_PROMOTE_VERSION(parchange_fused, basis_normal_fused);                             PRINT_PROMOTE_VERSION(parchange_fused);
+  BENCH_PROMOTE_VERSION(parchange_lut_chiral, basis_single, lut);                         PRINT_PROMOTE_VERSION(parchange_lut_chiral);
+  BENCH_PROMOTE_VERSION(parchange_lut_fused, basis_normal_fused, lut);                    PRINT_PROMOTE_VERSION(parchange_lut_fused);
+  BENCH_PROMOTE_VERSION(parchange_chiral_fused, basis_single_fused);                      PRINT_PROMOTE_VERSION(parchange_chiral_fused);
+  BENCH_PROMOTE_VERSION(parchange_lut_chiral_fused, basis_single_fused, lut);             PRINT_PROMOTE_VERSION(parchange_lut_chiral_fused);
+  // BENCH_PROMOTE_VERSION(parchange_finegrained, basis_normal);                             PRINT_PROMOTE_VERSION(parchange_finegrained);
+  // BENCH_PROMOTE_VERSION(parchange_finegrained_lut, basis_normal, lut);                    PRINT_PROMOTE_VERSION(parchange_finegrained_lut);
+  // BENCH_PROMOTE_VERSION(parchange_finegrained_chiral, basis_single);                      PRINT_PROMOTE_VERSION(parchange_finegrained_chiral);
+  // BENCH_PROMOTE_VERSION(parchange_finegrained_fused, basis_normal_fused);                 PRINT_PROMOTE_VERSION(parchange_finegrained_fused);
+  // BENCH_PROMOTE_VERSION(parchange_finegrained_lut_chiral, basis_single, lut);             PRINT_PROMOTE_VERSION(parchange_finegrained_lut_chiral);
+  // BENCH_PROMOTE_VERSION(parchange_finegrained_lut_fused, basis_normal_fused, lut);        PRINT_PROMOTE_VERSION(parchange_finegrained_lut_fused);
+  // BENCH_PROMOTE_VERSION(parchange_finegrained_chiral_fused, basis_single_fused);          PRINT_PROMOTE_VERSION(parchange_finegrained_chiral_fused);
+  // BENCH_PROMOTE_VERSION(parchange_finegrained_lut_chiral_fused, basis_single_fused, lut); PRINT_PROMOTE_VERSION(parchange_finegrained_lut_chiral_fused);
+  // BENCH_PROMOTE_VERSION(parchange_finegrained_play, basis_normal, lut);                   PRINT_PROMOTE_VERSION(parchange_finegrained_play);
 
 #undef BENCH_PROMOTE_VERSION
 #undef PRINT_PROMOTE_VERSION
