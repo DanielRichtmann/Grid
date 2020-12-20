@@ -1530,37 +1530,18 @@ void runBenchmark(int* argc, char*** argv) {
   // setup fields -- fine
   FineVector src_f(UGrid_f); random(pRNG_f, src_f);
   FineVector res_f_griddefault(UGrid_f); res_f_griddefault = Zero();
-  FineVector res_f_parchange(UGrid_f); res_f_parchange = Zero();
-  FineVector res_f_parchange_lut(UGrid_f); res_f_parchange_lut = Zero();
-  FineVector res_f_parchange_chiral(UGrid_f); res_f_parchange_chiral = Zero();
-  FineVector res_f_parchange_lut_chiral(UGrid_f); res_f_parchange_lut_chiral = Zero();
-  FineVector res_f_parchange_lut_chiral_fused(UGrid_f); res_f_parchange_lut_chiral_fused = Zero();
-  FineVector res_f_parchange_play(UGrid_f); res_f_parchange_play = Zero();
+  FineVector res_f_versions(UGrid_f); res_f_versions = Zero();
+
+  // setup fields -- basis
   std::vector<FineVector>   basis_single(nsingle, UGrid_f);
   std::vector<FineVector>   basis_normal(nbasis, UGrid_f);
-  ProjectorNormal                 basis_normal_fused(UGrid_f);
-  ProjectorSingle                 basis_single_fused(UGrid_f);
+  ProjectorNormal           basis_normal_fused(UGrid_f);
+  ProjectorSingle           basis_single_fused(UGrid_f);
 
   // setup fields -- coarse
   CoarseVector src_c(UGrid_c); random(pRNG_c, src_c);
   CoarseVector res_c_griddefault(UGrid_c); res_c_griddefault = Zero();
-  CoarseVector res_c_parchange(UGrid_c); res_c_parchange = Zero();
-  CoarseVector res_c_parchange_lut(UGrid_c); res_c_parchange_lut = Zero();
-  CoarseVector res_c_parchange_chiral(UGrid_c); res_c_parchange_chiral = Zero();
-  CoarseVector res_c_parchange_fused(UGrid_c); res_c_parchange_fused = Zero();
-  CoarseVector res_c_parchange_lut_chiral(UGrid_c); res_c_parchange_lut_chiral = Zero();
-  CoarseVector res_c_parchange_lut_fused(UGrid_c); res_c_parchange_lut_fused = Zero();
-  CoarseVector res_c_parchange_chiral_fused(UGrid_c); res_c_parchange_chiral_fused = Zero();
-  CoarseVector res_c_parchange_lut_chiral_fused(UGrid_c); res_c_parchange_lut_chiral_fused = Zero();
-  CoarseVector res_c_parchange_finegrained(UGrid_c); res_c_parchange_finegrained = Zero();
-  CoarseVector res_c_parchange_finegrained_lut(UGrid_c); res_c_parchange_finegrained_lut = Zero();
-  CoarseVector res_c_parchange_finegrained_chiral(UGrid_c); res_c_parchange_finegrained_chiral = Zero();
-  CoarseVector res_c_parchange_finegrained_fused(UGrid_c); res_c_parchange_finegrained_fused = Zero();
-  CoarseVector res_c_parchange_finegrained_lut_chiral(UGrid_c); res_c_parchange_finegrained_lut_chiral = Zero();
-  CoarseVector res_c_parchange_finegrained_lut_fused(UGrid_c); res_c_parchange_finegrained_lut_fused = Zero();
-  CoarseVector res_c_parchange_finegrained_chiral_fused(UGrid_c); res_c_parchange_finegrained_chiral_fused = Zero();
-  CoarseVector res_c_parchange_finegrained_lut_chiral_fused(UGrid_c); res_c_parchange_finegrained_lut_chiral_fused = Zero();
-  CoarseVector res_c_parchange_finegrained_play(UGrid_c); res_c_parchange_finegrained_play = Zero();
+  CoarseVector res_c_versions(UGrid_c); res_c_versions = Zero();
 
   // lookup table
   FineComplex mask_full(UGrid_f); mask_full = 1.;
@@ -1614,14 +1595,19 @@ void runBenchmark(int* argc, char*** argv) {
 #define BENCH_PROJECT_VERSION(VERSION, ...)\
   double secs_project_##VERSION;\
   {\
+    res_c_versions = Zero();\
     grid_printf("warmup %s %s\n", #VERSION, precision.c_str()); fflush(stdout);\
-    for(auto n : {1, 2, 3, 4, 5}) blockProject_##VERSION(res_c_##VERSION, src_f, __VA_ARGS__);\
+    for(auto n : {1, 2, 3, 4, 5}) blockProject_##VERSION(res_c_versions, src_f, __VA_ARGS__);\
+    res_c_versions = Zero();                                            \
     grid_printf("measurement %s %s\n", #VERSION, precision.c_str()); fflush(stdout);\
     double t0 = usecond();\
-    for(int n = 0; n < nIter; n++) blockProject_##VERSION(res_c_##VERSION, src_f, __VA_ARGS__);\
+    for(int n = 0; n < nIter; n++) blockProject_##VERSION(res_c_versions, src_f, __VA_ARGS__);\
     double t1 = usecond();\
     secs_project_##VERSION = (t1-t0)/1e6;\
-    assert(resultsAgree(res_c_griddefault, res_c_##VERSION, #VERSION));\
+    if(strcmp(#VERSION, "griddefault"))\
+      assert(resultsAgree(res_c_griddefault, res_c_versions, #VERSION));\
+    else\
+      res_c_griddefault = res_c_versions;\
   }
 
 #define PRINT_PROJECT_VERSION(VERSION) {\
@@ -1685,14 +1671,19 @@ void runBenchmark(int* argc, char*** argv) {
 #define BENCH_PROMOTE_VERSION(VERSION, ...)\
   double secs_promote_##VERSION;\
   {\
+    res_f_versions = Zero();\
     grid_printf("warmup %s %s\n", #VERSION, precision.c_str()); fflush(stdout);\
-    for(auto n : {1, 2, 3, 4, 5}) blockPromote_##VERSION(src_c, res_f_##VERSION, __VA_ARGS__);\
+    for(auto n : {1, 2, 3, 4, 5}) blockPromote_##VERSION(src_c, res_f_versions, __VA_ARGS__);\
+    res_f_versions = Zero();\
     grid_printf("measurement %s %s\n", #VERSION, precision.c_str()); fflush(stdout);\
     double t0 = usecond();\
-    for(int n = 0; n < nIter; n++) blockPromote_##VERSION(src_c, res_f_##VERSION, __VA_ARGS__);\
+    for(int n = 0; n < nIter; n++) blockPromote_##VERSION(src_c, res_f_versions, __VA_ARGS__);\
     double t1 = usecond();\
     secs_promote_##VERSION = (t1-t0)/1e6;\
-    assert(resultsAgree(res_f_griddefault, res_f_##VERSION, #VERSION));\
+    if(strcmp(#VERSION, "griddefault"))\
+      assert(resultsAgree(res_f_griddefault, res_f_versions, #VERSION));\
+    else\
+      res_f_griddefault = res_f_versions;\
   }
 
 #define PRINT_PROMOTE_VERSION(VERSION) {\
