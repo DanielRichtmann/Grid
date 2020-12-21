@@ -2,12 +2,11 @@
 
     Grid physics library, www.github.com/paboyle/Grid
 
-    Source file: ./tests/core/Test_clover_speedup.cc
+    Source file: ./tests/core/Test_chiral_inner_product.cc
 
     Copyright (C) 2015 - 2020
 
     Author: Daniel Richtmann <daniel.richtmann@gmail.com>
-            Nils Meyer <nils.meyer@ur.de>
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
