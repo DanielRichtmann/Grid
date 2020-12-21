@@ -61,43 +61,43 @@ using namespace Grid;
 
 
 template<int lohi,typename vobj,typename std::enable_if<isGridFundamental<vobj>::value && (lohi == 0 || lohi == 1),void>::type* = nullptr>
-accelerator_inline auto loadChirality(const iSpinColourVector<vobj>& in) -> iScalar<iVector<decltype(coalescedRead(in._internal._internal[0])), Nhs>> {
-  iScalar<iVector<decltype(coalescedRead(in._internal._internal[0])), Nhs>> ret;
+accelerator_inline auto loadChirality(const iSpinColourVector<vobj>& in) -> iHalfSpinColourVector<vobj> {
+  iHalfSpinColourVector<vobj> ret;
 
   constexpr int s_offset = lohi * 2;
 
-  for(int s=0; s <Nhs; s++)
-    ret()(s) = coalescedRead(in()(s_offset + s));
+  for(int s=0; s<Nhs; s++)
+    ret()(s) = in()(s_offset + s);
 
   return ret;
 }
 template<int lohi,typename vobj,int nbasis,typename std::enable_if<isGridFundamental<vobj>::value && (lohi == 0 || lohi == 1) && nbasis%2==0,void>::type* = nullptr>
-accelerator_inline auto loadChirality(const iVector<iSinglet<vobj>,nbasis>& in) -> iVector<decltype(coalescedRead(in._internal[0])),nbasis/2> {
-  iVector<decltype(coalescedRead(in._internal[0])),nbasis/2> ret;
+accelerator_inline auto loadChirality(const iVector<iSinglet<vobj>,nbasis>& in) -> iVector<iSinglet<vobj>,nbasis/2> {
+  iVector<iSinglet<vobj>,nbasis/2> ret;
 
   constexpr int nsingle = nbasis/2;
   constexpr int n_offset = lohi*nsingle;
 
   for(int n=0; n<nsingle; n++)
-    ret(n) = coalescedRead(in(n + n_offset));
+    ret(n) = in(n + n_offset);
 
   return ret;
 }
 
-template<int lohi,typename vobj,typename vsobj,typename std::enable_if<isGridFundamental<vobj>::value && (lohi == 0 || lohi == 1),void>::type* = nullptr>
-accelerator_inline void writeChirality(iSpinColourVector<vobj>& out, const iHalfSpinColourVector<vsobj>& in) {
+template<int lohi,typename vobj,typename std::enable_if<isGridFundamental<vobj>::value && (lohi == 0 || lohi == 1),void>::type* = nullptr>
+accelerator_inline void writeChirality(iSpinColourVector<vobj>& out, const iHalfSpinColourVector<vobj>& in) {
   constexpr int s_offset = lohi * 2;
 
-  for(int s=0; s <Nhs; s++)
-    coalescedWrite(out()(s_offset + s), in()(s));
+  for(int s=0; s<Nhs; s++)
+    out._internal(s_offset + s) = in()(s);
 }
-template<int lohi,typename vobj,int nbasis,typename vsobj,typename std::enable_if<isGridFundamental<vobj>::value && (lohi == 0 || lohi == 1) && nbasis%2==0,void>::type* = nullptr>
-accelerator_inline void writeChirality(iVector<iSinglet<vobj>,nbasis>& out, const iVector<iSinglet<vsobj>,nbasis/2>& in) {
+template<int lohi,typename vobj,int nbasis,typename std::enable_if<isGridFundamental<vobj>::value && (lohi == 0 || lohi == 1) && nbasis%2==0,void>::type* = nullptr>
+accelerator_inline void writeChirality(iVector<iSinglet<vobj>,nbasis>& out, const iVector<iSinglet<vobj>,nbasis/2>& in) {
   constexpr int nsingle = nbasis/2;
   constexpr int n_offset = lohi*nsingle;
 
   for(int n=0; n<nsingle; n++)
-    coalescedWrite(out(n_offset + n), in(n));
+    out(n_offset + n) = in(n);
 }
 template<class ScalarField>
 class CoarseningLookupTable {
@@ -1458,7 +1458,7 @@ inline void blockPromote_parchange(const Lattice<iVector<CComplex, nbasis>>& coa
 
     decltype(coalescedRead(fineData_v[0])) fineData_t = Zero();
     for(int i=0; i<nbasis; ++i) {
-      fineData_t = fineData_t + coarseData_v(sc)(i) * Basis_p[i](sf);
+      fineData_t = fineData_t + coalescedRead(coarseData_v[sc](i)) * Basis_p[i](sf);
     }
     coalescedWrite(fineData_v[sf], fineData_t);
   });
@@ -1499,7 +1499,7 @@ inline void blockPromote_parchange_lut(const Lattice<iVector<CComplex, nbasis>>&
 
     decltype(coalescedRead(fineData_v[0])) fineData_t = Zero();
     for(int i=0; i<nbasis; ++i) {
-      fineData_t = fineData_t + coarseData_v(sc)(i) * Basis_p[i](sf);
+      fineData_t = fineData_t + coalescedRead(coarseData_v[sc](i)) * Basis_p[i](sf);
     }
     coalescedWrite(fineData_v[sf], fineData_t);
   });
@@ -1564,14 +1564,19 @@ inline void blockPromote_parchange_chiral(const Lattice<iVector<CComplex, nbasis
     for(int d = 0; d < _ndimension; ++d) coor_c[d] = coor_f[d] / block_r[d];
     Lexicographic::IndexFromCoor(coor_c, sc, coarse_rdimensions);
 
-    decltype(loadChirality<0>(fineData_v[0])) fineDataUpper_t = Zero();
-    decltype(loadChirality<1>(fineData_v[0])) fineDataLower_t = Zero();
+    typedef decltype(coalescedRead(fineData_v[0])) calcSpinor;
+    typedef decltype(loadChirality<0>(coalescedRead(fineData_v[0]))) calcHalfSpinor;
+    calcSpinor fineData_t;
+    calcHalfSpinor fineDataUpper_t = Zero();
+    calcHalfSpinor fineDataLower_t = Zero();
     for(int i=0; i<nvectors; ++i) {
-      fineDataUpper_t = fineDataUpper_t + coarseData_v(sc)(i + 0 * nvectors) * loadChirality<0>(Basis_p[i][sf]);
-      fineDataLower_t = fineDataLower_t + coarseData_v(sc)(i + 1 * nvectors) * loadChirality<1>(Basis_p[i][sf]);
+      auto basis_t = coalescedRead(Basis_p[i][sf]);
+      fineDataUpper_t = fineDataUpper_t + coalescedRead(coarseData_v[sc](i + 0 * nvectors)) * loadChirality<0>(basis_t);
+      fineDataLower_t = fineDataLower_t + coalescedRead(coarseData_v[sc](i + 1 * nvectors)) * loadChirality<1>(basis_t);
     }
-    writeChirality<0>(fineData_v[sf], fineDataUpper_t);
-    writeChirality<1>(fineData_v[sf], fineDataLower_t);
+    writeChirality<0>(fineData_t, fineDataUpper_t);
+    writeChirality<1>(fineData_t, fineDataLower_t);
+    coalescedWrite(fineData_v[sf], fineData_t);
   });
   for(int i=0;i<Basis.size();i++) Basis_v[i].ViewClose();
 }
@@ -1621,7 +1626,7 @@ inline void blockPromote_parchange_fused(const Lattice<iVector<CComplex, nbasis>
 
     decltype(coalescedRead(fineData_v[0])) fineData_t = Zero();
     for(int i=0; i<nbasis; ++i) {
-      fineData_t = fineData_t + coarseData_v(sc)(i) * coalescedRead(projector_v[sf](i));
+      fineData_t = fineData_t + coalescedRead(coarseData_v[sc](i)) * coalescedRead(projector_v[sf](i));
     }
     coalescedWrite(fineData_v[sf], fineData_t);
   });
@@ -1666,14 +1671,19 @@ inline void blockPromote_parchange_lut_chiral(const Lattice<iVector<CComplex, nb
   accelerator_for(sf, fine_osites, vobj::Nsimd(), {
     int sc = rlut_v[sf];
 
-    decltype(loadChirality<0>(fineData_v[0])) fineDataUpper_t = Zero();
-    decltype(loadChirality<1>(fineData_v[0])) fineDataLower_t = Zero();
+    typedef decltype(coalescedRead(fineData_v[0])) calcSpinor;
+    typedef decltype(loadChirality<0>(coalescedRead(fineData_v[0]))) calcHalfSpinor;
+    calcSpinor fineData_t;
+    calcHalfSpinor fineDataUpper_t = Zero();
+    calcHalfSpinor fineDataLower_t = Zero();
     for(int i=0; i<nvectors; ++i) {
-      fineDataUpper_t = fineDataUpper_t + coarseData_v(sc)(i + 0 * nvectors) * loadChirality<0>(Basis_p[i][sf]);
-      fineDataLower_t = fineDataLower_t + coarseData_v(sc)(i + 1 * nvectors) * loadChirality<1>(Basis_p[i][sf]);
+      auto basis_t = coalescedRead(Basis_p[i][sf]);
+      fineDataUpper_t = fineDataUpper_t + coalescedRead(coarseData_v[sc](i + 0 * nvectors)) * loadChirality<0>(basis_t);
+      fineDataLower_t = fineDataLower_t + coalescedRead(coarseData_v[sc](i + 1 * nvectors)) * loadChirality<1>(basis_t);
     }
-    writeChirality<0>(fineData_v[sf], fineDataUpper_t);
-    writeChirality<1>(fineData_v[sf], fineDataLower_t);
+    writeChirality<0>(fineData_t, fineDataUpper_t);
+    writeChirality<1>(fineData_t, fineDataLower_t);
+    coalescedWrite(fineData_v[sf], fineData_t);
   });
   for(int i=0;i<Basis.size();i++) Basis_v[i].ViewClose();
 }
@@ -1705,7 +1715,7 @@ inline void blockPromote_parchange_lut_fused(const Lattice<iVector<CComplex, nba
 
     decltype(coalescedRead(fineData_v[0])) fineData_t = Zero();
     for(int i=0; i<nbasis; ++i) {
-      fineData_t = fineData_t + coarseData_v(sc)(i) * coalescedRead(projector_v[sf](i));
+      fineData_t = fineData_t + coalescedRead(coarseData_v[sc](i)) * coalescedRead(projector_v[sf](i));
     }
     coalescedWrite(fineData_v[sf], fineData_t);
   });
@@ -1760,14 +1770,19 @@ inline void blockPromote_parchange_chiral_fused(const Lattice<iVector<CComplex, 
     for(int d = 0; d < _ndimension; ++d) coor_c[d] = coor_f[d] / block_r[d];
     Lexicographic::IndexFromCoor(coor_c, sc, coarse_rdimensions);
 
-    decltype(loadChirality<0>(fineData_v[0])) fineDataUpper_t = Zero();
-    decltype(loadChirality<1>(fineData_v[0])) fineDataLower_t = Zero();
+    typedef decltype(coalescedRead(fineData_v[0])) calcSpinor;
+    typedef decltype(loadChirality<0>(coalescedRead(fineData_v[0]))) calcHalfSpinor;
+    calcSpinor fineData_t;
+    calcHalfSpinor fineDataUpper_t = Zero();
+    calcHalfSpinor fineDataLower_t = Zero();
     for(int i=0; i<nvectors; ++i) {
-      fineDataUpper_t = fineDataUpper_t + coarseData_v(sc)(i + 0 * nvectors) * loadChirality<0>(projector_v[sf](i));
-      fineDataLower_t = fineDataLower_t + coarseData_v(sc)(i + 1 * nvectors) * loadChirality<1>(projector_v[sf](i));
+      auto projector_t = coalescedRead(projector_v[sf](i));
+      fineDataUpper_t = fineDataUpper_t + coalescedRead(coarseData_v[sc](i + 0 * nvectors)) * loadChirality<0>(projector_t);
+      fineDataLower_t = fineDataLower_t + coalescedRead(coarseData_v[sc](i + 1 * nvectors)) * loadChirality<1>(projector_t);
     }
-    writeChirality<0>(fineData_v[sf], fineDataUpper_t);
-    writeChirality<1>(fineData_v[sf], fineDataLower_t);
+    writeChirality<0>(fineData_t, fineDataUpper_t);
+    writeChirality<1>(fineData_t, fineDataLower_t);
+    coalescedWrite(fineData_v[sf], fineData_t);
   });
 }
 
@@ -1803,14 +1818,19 @@ inline void blockPromote_parchange_lut_chiral_fused(const Lattice<iVector<CCompl
   accelerator_for(sf, fine_osites, vobj::Nsimd(), {
     int sc = rlut_v[sf];
 
-    decltype(loadChirality<0>(fineData_v[0])) fineDataUpper_t = Zero();
-    decltype(loadChirality<1>(fineData_v[0])) fineDataLower_t = Zero();
+    typedef decltype(coalescedRead(fineData_v[0])) calcSpinor;
+    typedef decltype(loadChirality<0>(coalescedRead(fineData_v[0]))) calcHalfSpinor;
+    calcSpinor fineData_t;
+    calcHalfSpinor fineDataUpper_t = Zero();
+    calcHalfSpinor fineDataLower_t = Zero();
     for(int i=0; i<nvectors; ++i) {
-      fineDataUpper_t = fineDataUpper_t + coarseData_v(sc)(i + 0 * nvectors) * loadChirality<0>(projector_v[sf](i));
-      fineDataLower_t = fineDataLower_t + coarseData_v(sc)(i + 1 * nvectors) * loadChirality<1>(projector_v[sf](i));
+      auto projector_t = coalescedRead(projector_v[sf](i));
+      fineDataUpper_t = fineDataUpper_t + coalescedRead(coarseData_v[sc](i + 0 * nvectors)) * loadChirality<0>(projector_t);
+      fineDataLower_t = fineDataLower_t + coalescedRead(coarseData_v[sc](i + 1 * nvectors)) * loadChirality<1>(projector_t);
     }
-    writeChirality<0>(fineData_v[sf], fineDataUpper_t);
-    writeChirality<1>(fineData_v[sf], fineDataLower_t);
+    writeChirality<0>(fineData_t, fineDataUpper_t);
+    writeChirality<1>(fineData_t, fineDataLower_t);
+    coalescedWrite(fineData_v[sf], fineData_t);
   });
 }
 
