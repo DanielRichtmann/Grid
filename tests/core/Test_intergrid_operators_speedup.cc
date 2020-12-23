@@ -2099,7 +2099,7 @@ void runBenchmark(int* argc, char*** argv) {
 int main(int argc, char** argv) {
   Grid_init(&argc, &argv);
 
-  runBenchmark<vComplexD>(&argc, &argv);
+  // runBenchmark<vComplexD>(&argc, &argv);
   runBenchmark<vComplexF>(&argc, &argv);
 
   Grid_finalize();
