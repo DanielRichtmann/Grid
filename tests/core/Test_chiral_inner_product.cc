@@ -36,9 +36,9 @@ using namespace Grid;
 #endif
 
 
-// #define IP_D2
+// #define IP_D2 // NOTE: this halves performance on CPUs
 // #define IP_D
-// #define IP_NORMAL
+#define IP_NORMAL
 
 #if defined(IP_D2) // as it is originally in gpt
 #define INNER_PRODUCT innerProductD2
