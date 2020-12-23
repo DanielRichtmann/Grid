@@ -1814,6 +1814,9 @@ void runBenchmark(int* argc, char*** argv) {
   const int nbasis = NBASIS; static_assert((nbasis & 0x1) == 0, "");
   const int nsingle = nbasis/2;
 
+  // command line arguments
+  const int nIter = readFromCommandLineInt(argc, argv, "--niter", 1000);
+
   // helpers
 #define xstr(s) str(s)
 #define str(s) #s
@@ -1886,38 +1889,54 @@ void runBenchmark(int* argc, char*** argv) {
   fillProjector(basis_single, basis_single_fused);
   fillProjector(basis_normal, basis_normal_fused);
 
-  // misc stuff needed for benchmarks
-  const int nIter = readFromCommandLineInt(argc, argv, "--niter", 1000);
-  double volume=1.0; for(int mu=0; mu<Nd; mu++) volume*=UGrid_f->_fdimensions[mu];
-
   // misc stuff needed for performance figures
   double flops_per_cmul = 6;
   double flops_per_cadd = 2;
+  double complex_words  = 2;
   double fine_complex   = Ns * Nc;
-  double fine_floats    = fine_complex * 2;
+  double fine_floats    = fine_complex * complex_words;
   double coarse_complex = nbasis;
-  double coarse_floats  = coarse_complex * 2;
-  double prec_bytes     = getPrecision<vCoeff_t>::value * 4;
+  double coarse_floats  = coarse_complex * complex_words;
+  double prec_bytes     = getPrecision<vCoeff_t>::value * 4; // 4 for float, 8 for double
+  double fine_volume    = std::accumulate(UGrid_f->_fdimensions.begin(),UGrid_f->_fdimensions.end(),1,std::multiplies<int>());
+  double coarse_volume  = std::accumulate(UGrid_c->_fdimensions.begin(),UGrid_c->_fdimensions.end(),1,std::multiplies<int>());
+  double block_volume   = fine_volume / coarse_volume;
 
-  // performance figures project
-  double project_flops_per_site = 1.0 * (fine_complex * flops_per_cmul + (fine_complex - 1) * flops_per_cadd) * nsingle;
-  double flops_project          = project_flops_per_site * UGrid_f->gSites() * nIter;
-  double nbytes_project         = (((nsingle + 1) * fine_floats) * UGrid_f->gSites()
-                                + coarse_floats * UGrid_c->gSites())
-                                * prec_bytes * nIter;
-  double flops_wrong_project    = project_flops_per_site * 2 * UGrid_f->gSites() * nIter;   // 2 times more per site
-  double nbytes_wrong_project   = (((nbasis + 1) * fine_floats) * UGrid_f->gSites() // nsingle*fine_floats times more per site
-                                + coarse_floats * UGrid_c->gSites())
-                                * prec_bytes * nIter;
-  double flops_mgbench_project  = (8 * fine_complex) * nbasis * UGrid_f->gSites() * nIter; // 2 more per inner product, factor 2 more vectors
-  double nbytes_mgbench_project = (2 * 1 + 2 * fine_complex) * nbasis * UGrid_f->gSites()
-                                * 2 * prec_bytes * nIter;
+  // project -- my counting with ntv (= minimal required)
+  double project_flops_per_fine_site_minimal = 1.0 * nsingle * 2 * (4 * fine_complex - 2);
+  double project_words_per_fine_site_minimal = 1.0 * (nsingle + 1) * fine_complex + 1/block_volume * coarse_complex;
+  double project_bytes_per_fine_site_minimal = project_words_per_fine_site_minimal * complex_words * prec_bytes;
+  double project_flops_minimal               = project_flops_per_fine_site_minimal * UGrid_f->gSites() * nIter;
+  double project_words_minimal               = project_words_per_fine_site_minimal * UGrid_f->gSites() * nIter;
+  double project_nbytes_minimal              = project_bytes_per_fine_site_minimal * UGrid_f->gSites() * nIter;
+
+  // project -- my counting with nbasis
+  double project_flops_per_fine_site_nbasis = 1.0 * nbasis * (8 * fine_complex - 2);
+  double project_words_per_fine_site_nbasis = 1.0 * (nbasis + 1) * fine_complex + 1/block_volume * coarse_complex;
+  double project_bytes_per_fine_site_nbasis = project_words_per_fine_site_nbasis * complex_words * prec_bytes;
+  double project_flops_nbasis               = project_flops_per_fine_site_nbasis * UGrid_f->gSites() * nIter;
+  double project_words_nbasis               = project_words_per_fine_site_nbasis * UGrid_f->gSites() * nIter;
+  double project_nbytes_nbasis              = project_bytes_per_fine_site_nbasis * UGrid_f->gSites() * nIter;
+
+  // project -- christoph's counting in the gpt benchmark
+  double project_flops_per_fine_site_gpt = 1.0 * (fine_complex * flops_per_cmul + (fine_complex - 1) * flops_per_cadd) * nbasis;
+  double project_flops_gpt               = project_flops_per_fine_site_gpt * UGrid_f->gSites() * nIter;
+  double project_nbytes_gpt              = (((nbasis + 1) * fine_floats) * UGrid_f->gSites()
+                                         + coarse_floats * UGrid_c->gSites())
+                                         * prec_bytes * nIter;
+  double project_words_gpt               = project_nbytes_gpt / complex_words / prec_bytes;
 
   // report calculated performance figures per site
   double factor = UGrid_f->gSites() * nIter;
-  std::cout << GridLogMessage << "Project: Minimal per site: flops, words, bytes, flops/bytes: " << project_flops_per_site << " " << nbytes_project / factor << " " << flops_project/nbytes_project<< std::endl;
-  std::cout << GridLogMessage << "Project: Wrong   per site: flops, words, bytes, flops/bytes: " << project_flops_per_site * 2 << " " << nbytes_wrong_project / factor << " " << flops_wrong_project/nbytes_wrong_project << std::endl;
-  std::cout << GridLogMessage << "Project: MGBENCH per site: flops, words, bytes, flops/bytes: " << (8 * fine_complex) * nbasis << " " << nbytes_mgbench_project / factor << " " << flops_mgbench_project/nbytes_mgbench_project << std::endl;
+#define PRINT_PER_SITE_VALUES(COUNTING) {\
+  grid_printf("Project: per-site values with counting type %10s: flops = %f, words = %f, bytes = %f, flops/bytes = %f\n",\
+              #COUNTING, project_flops_##COUNTING/factor, project_words_##COUNTING/factor, project_nbytes_##COUNTING/factor, project_flops_##COUNTING/project_nbytes_##COUNTING);\
+  }
+  PRINT_PER_SITE_VALUES(minimal);
+  PRINT_PER_SITE_VALUES(nbasis);
+  PRINT_PER_SITE_VALUES(gpt);
+#undef PRINT_PER_SITE_VALUES
+  grid_printf("\n");
 
 #define BENCH_PROJECT_VERSION(VERSION, ...)\
   double secs_project_##VERSION;\
@@ -1938,16 +1957,20 @@ void runBenchmark(int* argc, char*** argv) {
   }
 
 #define PRINT_PROJECT_VERSION(VERSION) {\
-  double GFlopsPerSec_project_##VERSION       = flops_project / secs_project_##VERSION / 1e9;\
-  double GBPerSec_project_##VERSION           = nbytes_project / secs_project_##VERSION / 1e9;\
-  double GFlopsPerSec_project_wrong_##VERSION = flops_wrong_project / secs_project_##VERSION / 1e9;\
-  double GBPerSec_project_wrong_##VERSION     = nbytes_wrong_project / secs_project_##VERSION / 1e9;\
+  double GFlopsPerSec_project_minimal_##VERSION = project_flops_minimal  / secs_project_##VERSION / 1e9;\
+  double GBPerSec_project_minimal_##VERSION     = project_nbytes_minimal / secs_project_##VERSION / 1e9;\
+  double GFlopsPerSec_project_nbasis_##VERSION  = project_flops_nbasis   / secs_project_##VERSION / 1e9;\
+  double GBPerSec_project_nbasis_##VERSION      = project_nbytes_nbasis  / secs_project_##VERSION / 1e9;\
+  double GFlopsPerSec_project_gpt_##VERSION     = project_flops_gpt      / secs_project_##VERSION / 1e9;\
+  double GBPerSec_project_gpt_##VERSION         = project_nbytes_gpt     / secs_project_##VERSION / 1e9;\
   std::cout << GridLogMessage << nIter << " applications of blockProject_" << #VERSION << std::endl;\
   std::cout << GridLogMessage << "    Time to complete            : " << secs_project_##VERSION << " s" << std::endl;\
-  std::cout << GridLogMessage << "    Total performance           : " << GFlopsPerSec_project_##VERSION << " GFlops/s" << std::endl;\
-  std::cout << GridLogMessage << "    Effective memory bandwidth  : " << GBPerSec_project_##VERSION << " GB/s" << std::endl;\
-  std::cout << GridLogMessage << "    Wrong     total performance : " << GFlopsPerSec_project_wrong_##VERSION << " GFlops/s" << std::endl;\
-  std::cout << GridLogMessage << "    Wrong     memory bandwidth  : " << GBPerSec_project_wrong_##VERSION << " GB/s" << std::endl << std::endl;\
+  std::cout << GridLogMessage << "    Total performance           : " << GFlopsPerSec_project_minimal_##VERSION << " GFlops/s" << std::endl;\
+  std::cout << GridLogMessage << "    Effective memory bandwidth  : " << GBPerSec_project_minimal_##VERSION << " GB/s" << std::endl;\
+  std::cout << GridLogMessage << "    nbasis total performance    : " << GFlopsPerSec_project_nbasis_##VERSION << " GFlops/s" << std::endl;\
+  std::cout << GridLogMessage << "    nbasis memory bandwidth     : " << GBPerSec_project_nbasis_##VERSION << " GB/s" << std::endl;\
+  std::cout << GridLogMessage << "    gpt total performance       : " << GFlopsPerSec_project_gpt_##VERSION << " GFlops/s" << std::endl;\
+  std::cout << GridLogMessage << "    gpt memory bandwidth        : " << GBPerSec_project_gpt_##VERSION << " GB/s" << std::endl << std::endl;\
 }
 
   BENCH_PROJECT_VERSION(griddefault, basis_normal);                                       PRINT_PROJECT_VERSION(griddefault);
@@ -1976,24 +1999,40 @@ void runBenchmark(int* argc, char*** argv) {
   grid_printf("DONE WITH PROJECT BENCHMARKS in %s precision\n\n", precision.c_str()); fflush(stdout);
 
 
-  // performance figures promote
-  double promote_flops_per_site = fine_complex * nsingle * flops_per_cmul + fine_complex * (nsingle - 1) * flops_per_cadd;
-  double flops_promote          = promote_flops_per_site * UGrid_f->gSites() * nIter;
-  double nbytes_promote         = (((nsingle + 1) * fine_floats) * UGrid_f->gSites()
-                                + coarse_floats * UGrid_c->gSites())
-                                * prec_bytes * nIter;
-  double flops_wrong_promote    = 2 * (promote_flops_per_site + fine_complex) * UGrid_f->gSites() * nIter;
-  double nbytes_wrong_promote   = (((nbasis + 1) * fine_floats) * UGrid_f->gSites() // nsingle*fine_floats times more per site
-                                + coarse_floats * UGrid_c->gSites())
-                                * prec_bytes * nIter;
-  double flops_mgbench_promote  = (8 * (nbasis - 1) + 6) * fine_complex * UGrid_f->gSites() * nIter;
-  double nbytes_mgbench_promote = ((1 * 1 + 3 * fine_complex) * (nbasis - 1) + (1 * 1 + 2 * fine_complex) * 1) * UGrid_f->gSites()
-                                * 2 * prec_bytes * nIter;
+  // promote -- my counting with ntv (= minimal required)
+  double promote_flops_per_fine_site_minimal = 1.0 * nsingle * 6 * fine_complex + (nsingle - 1) * 2 * fine_complex;
+  double promote_words_per_fine_site_minimal = 1.0 * (nsingle + 1) * fine_complex + 1/block_volume * coarse_complex;
+  double promote_bytes_per_fine_site_minimal = promote_words_per_fine_site_minimal * complex_words * prec_bytes;
+  double promote_flops_minimal               = promote_flops_per_fine_site_minimal * UGrid_f->gSites() * nIter;
+  double promote_words_minimal               = promote_words_per_fine_site_minimal * UGrid_f->gSites() * nIter;
+  double promote_nbytes_minimal              = promote_bytes_per_fine_site_minimal * UGrid_f->gSites() * nIter;
+
+  // promote -- my counting with nbasis
+  double promote_flops_per_fine_site_nbasis = 1.0 * nbasis * 6 * fine_complex + (nbasis - 1) * 2 * fine_complex;
+  double promote_words_per_fine_site_nbasis = 1.0 * (nbasis + 1) * fine_complex + 1/block_volume * coarse_complex;
+  double promote_bytes_per_fine_site_nbasis = promote_words_per_fine_site_nbasis * complex_words * prec_bytes;
+  double promote_flops_nbasis               = promote_flops_per_fine_site_nbasis * UGrid_f->gSites() * nIter;
+  double promote_words_nbasis               = promote_words_per_fine_site_nbasis * UGrid_f->gSites() * nIter;
+  double promote_nbytes_nbasis              = promote_bytes_per_fine_site_nbasis * UGrid_f->gSites() * nIter;
+
+  // promote -- christoph's counting in the gpt benchmark
+  double promote_flops_per_fine_site_gpt = 1.0 * (fine_complex * nbasis * flops_per_cmul + fine_complex * (nbasis - 1) * flops_per_cadd);
+  double promote_flops_gpt               = promote_flops_per_fine_site_gpt * UGrid_f->gSites() * nIter;
+  double promote_nbytes_gpt              = (((nbasis + 1) * fine_floats) * UGrid_f->gSites()
+                                         + coarse_floats * UGrid_c->gSites())
+                                         * prec_bytes * nIter;
+  double promote_words_gpt               = promote_nbytes_gpt / complex_words / prec_bytes;
 
   // report calculated performance figures per site
-  std::cout << GridLogMessage << "Promote: Minimal per site: flops, words, bytes, flops/bytes: " << promote_flops_per_site << " " << nbytes_promote / factor << " " << flops_promote/nbytes_promote<< std::endl;
-  std::cout << GridLogMessage << "Promote: Wrong   per site: flops, words, bytes, flops/bytes: " << 2 * (promote_flops_per_site + fine_complex) << " " << nbytes_wrong_promote / factor << " " << flops_wrong_promote/nbytes_wrong_promote << std::endl;
-  std::cout << GridLogMessage << "Promote: MGBENCH per site: flops, words, bytes, flops/bytes: " << (8 * (nbasis - 1) + 6) * fine_complex << " " << nbytes_mgbench_promote / factor << " " << flops_mgbench_promote/nbytes_mgbench_promote << std::endl;
+#define PRINT_PER_SITE_VALUES(COUNTING) {\
+  grid_printf("Promote: per-site values with counting type %10s: flops = %f, words = %f, bytes = %f, flops/bytes = %f\n",\
+              #COUNTING, promote_flops_##COUNTING/factor, promote_words_##COUNTING/factor, promote_nbytes_##COUNTING/factor, promote_flops_##COUNTING/promote_nbytes_##COUNTING);\
+  }
+  PRINT_PER_SITE_VALUES(minimal);
+  PRINT_PER_SITE_VALUES(nbasis);
+  PRINT_PER_SITE_VALUES(gpt);
+#undef PRINT_PER_SITE_VALUES
+  grid_printf("\n");
 
 #define BENCH_PROMOTE_VERSION(VERSION, ...)\
   double secs_promote_##VERSION;\
@@ -2014,16 +2053,20 @@ void runBenchmark(int* argc, char*** argv) {
   }
 
 #define PRINT_PROMOTE_VERSION(VERSION) {\
-  double GFlopsPerSec_promote_##VERSION       = flops_promote / secs_promote_##VERSION / 1e9;\
-  double GBPerSec_promote_##VERSION           = nbytes_promote / secs_promote_##VERSION / 1e9;\
-  double GFlopsPerSec_promote_wrong_##VERSION = flops_wrong_promote / secs_promote_##VERSION / 1e9;\
-  double GBPerSec_promote_wrong_##VERSION     = nbytes_wrong_promote / secs_promote_##VERSION / 1e9;\
+  double GFlopsPerSec_promote_minimal_##VERSION = promote_flops_minimal  / secs_promote_##VERSION / 1e9;\
+  double GBPerSec_promote_minimal_##VERSION     = promote_nbytes_minimal / secs_promote_##VERSION / 1e9;\
+  double GFlopsPerSec_promote_nbasis_##VERSION  = promote_flops_nbasis   / secs_promote_##VERSION / 1e9;\
+  double GBPerSec_promote_nbasis_##VERSION      = promote_nbytes_nbasis  / secs_promote_##VERSION / 1e9;\
+  double GFlopsPerSec_promote_gpt_##VERSION     = promote_flops_gpt      / secs_promote_##VERSION / 1e9;\
+  double GBPerSec_promote_gpt_##VERSION         = promote_nbytes_gpt     / secs_promote_##VERSION / 1e9;\
   std::cout << GridLogMessage << nIter << " applications of blockPromote_" << #VERSION << std::endl;\
   std::cout << GridLogMessage << "    Time to complete            : " << secs_promote_##VERSION << " s" << std::endl;\
-  std::cout << GridLogMessage << "    Total performance           : " << GFlopsPerSec_promote_##VERSION << " GFlops/s" << std::endl;\
-  std::cout << GridLogMessage << "    Effective memory bandwidth  : " << GBPerSec_promote_##VERSION << " GB/s" << std::endl;\
-  std::cout << GridLogMessage << "    Wrong     total performance : " << GFlopsPerSec_promote_wrong_##VERSION << " GFlops/s" << std::endl;\
-  std::cout << GridLogMessage << "    Wrong     memory bandwidth  : " << GBPerSec_promote_wrong_##VERSION << " GB/s" << std::endl << std::endl;\
+  std::cout << GridLogMessage << "    Total performance           : " << GFlopsPerSec_promote_minimal_##VERSION << " GFlops/s" << std::endl;\
+  std::cout << GridLogMessage << "    Effective memory bandwidth  : " << GBPerSec_promote_minimal_##VERSION << " GB/s" << std::endl;\
+  std::cout << GridLogMessage << "    nbasis total performance    : " << GFlopsPerSec_promote_nbasis_##VERSION << " GFlops/s" << std::endl;\
+  std::cout << GridLogMessage << "    nbasis memory bandwidth     : " << GBPerSec_promote_nbasis_##VERSION << " GB/s" << std::endl;\
+  std::cout << GridLogMessage << "    gpt total performance       : " << GFlopsPerSec_promote_gpt_##VERSION << " GFlops/s" << std::endl;\
+  std::cout << GridLogMessage << "    gpt memory bandwidth        : " << GBPerSec_promote_gpt_##VERSION << " GB/s" << std::endl << std::endl;\
 }
 
   BENCH_PROMOTE_VERSION(griddefault, basis_normal);                                       PRINT_PROMOTE_VERSION(griddefault);
