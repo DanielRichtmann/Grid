@@ -2,7 +2,7 @@
 
     Grid physics library, www.github.com/paboyle/Grid
 
-    Source file: ./tests/core/Test_chiral_inner_product.cc
+    Source file: ./tests/core/Test_intergrid_operators_speedup.cc
 
     Copyright (C) 2015 - 2020
 
