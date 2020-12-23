@@ -335,37 +335,6 @@ bool resultsAgree(const Field& ref, const Field& res, const std::string& name) {
 }
 
 
-// functions needed for the initial implementation of the chirality respecting block project
-template<typename vobj, typename std::enable_if<isGridFundamental<vobj>::value, vobj>::type* = nullptr>
-accelerator_inline iScalar<vobj> getUpperIpElem(const iScalar<iVector<iScalar<vobj>, 2>>& in)
-{
-  iScalar<vobj> ret;
-  ret._internal = TensorRemove(in()(0));
-  return ret;
-}
-template<typename vobj, typename std::enable_if<isGridFundamental<vobj>::value, vobj>::type* = nullptr>
-accelerator_inline iScalar<vobj> getLowerIpElem(const iScalar<iVector<iScalar<vobj>, 2>>& in)
-{
-  iScalar<vobj> ret;
-  ret._internal = TensorRemove(in()(1));
-  return ret;
-}
-template<typename vobj, typename std::enable_if<isGridFundamental<vobj>::value, vobj>::type* = nullptr>
-accelerator_inline iScalar<vobj> getUpperIpElem(const iVector<iSinglet<vobj>, 2>& in)
-{
-  iScalar<vobj> ret;
-  ret._internal = TensorRemove(in(0)());
-  return ret;
-}
-template<typename vobj, typename std::enable_if<isGridFundamental<vobj>::value, vobj>::type* = nullptr>
-accelerator_inline iScalar<vobj> getLowerIpElem(const iVector<iSinglet<vobj>, 2>& in)
-{
-  iScalar<vobj> ret;
-  ret._internal = TensorRemove(in(1)());
-  return ret;
-}
-
-
 template<class vobj,class CComplex,int nbasis,class VLattice>
 inline void blockProject_griddefault(Lattice<iVector<CComplex, nbasis>>& coarseData,
                                      const Lattice<vobj>&                fineData,
