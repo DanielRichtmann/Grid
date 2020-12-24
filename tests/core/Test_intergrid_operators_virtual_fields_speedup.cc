@@ -635,6 +635,109 @@ inline void vectorizableBlockProject_parchange_lut(PVector<Lattice<iVector<CComp
   VECTOR_VIEW_CLOSE_POINTER(fine_v,fine_p);
   VECTOR_VIEW_CLOSE_POINTER(coarse_v,coarse_p);
 }
+
+
+template<class vobj,class CComplex,int basis_virtual_size,class VLattice,class T_singlet>
+inline void vectorizableBlockProject_parchange_lut_chiral(PVector<Lattice<iVector<CComplex, basis_virtual_size>>>&   coarse,
+				                          long                                                       coarse_n_virtual,
+				                          const PVector<Lattice<vobj>>&                              fine,
+				                          long                                                       fine_n_virtual,
+				                          const VLattice&                                            basis,
+				                          long                                                       basis_n_virtual,
+				                          const CoarseningLookupTable<T_singlet>&                    lut,
+				                          long                                                       basis_n_block)
+{
+
+  const long n_chiralities = 2;
+
+  assert(fine.size() > 0 && coarse.size() > 0 && basis.size() > 0);
+
+  assert(basis.size() % basis_n_virtual == 0);
+  long basis_n = basis.size() / basis_n_virtual;
+
+  assert(fine.size() % fine_n_virtual == 0);
+  long fine_n = fine.size() / fine_n_virtual;
+
+  assert(coarse.size() % coarse_n_virtual == 0);
+  long coarse_n = coarse.size() / coarse_n_virtual;
+
+  assert(fine_n == coarse_n);
+  long vec_n = fine_n;
+
+  assert((basis_n * n_chiralities) % coarse_n_virtual == 0);
+  long coarse_virtual_size = (basis_n * n_chiralities) / coarse_n_virtual;
+
+  assert(coarse_virtual_size == basis_virtual_size);
+
+  GridBase *fine_grid   = fine[0].Grid();
+  GridBase *coarse_grid = coarse[0].Grid();
+
+  long coarse_osites = coarse_grid->oSites();
+
+  assert(fine_grid->_ndimension == coarse_grid->_ndimension);
+  assert(lut.gridsMatch(coarse_grid, fine_grid));
+
+  assert(fine_n_virtual == basis_n_virtual);
+
+  assert(basis_n == basis_virtual_size*coarse_n_virtual/n_chiralities);
+
+  auto lut_v = lut.View();
+  auto sizes_v = lut.Sizes();
+
+  VECTOR_VIEW_OPEN_POINTER(fine,fine_v,fine_p,AcceleratorRead);
+  VECTOR_VIEW_OPEN_POINTER(coarse,coarse_v,coarse_p,AcceleratorWriteDiscard);
+
+  for (long basis_i0=0;basis_i0<basis_n;basis_i0+=basis_n_block) {
+    long basis_i1 = std::min(basis_i0 + basis_n_block, basis_n);
+    long basis_block = basis_i1 - basis_i0;
+    VECTOR_VIEW_OPEN_POINTER(basis.slice(basis_i0*fine_n_virtual,basis_i1*fine_n_virtual),basis_v,basis_p,AcceleratorRead);
+
+    accelerator_for(_idx, n_chiralities*basis_block*coarse_osites*vec_n, vobj::Nsimd(), {
+	auto idx = _idx;
+	auto basis_i_rel = idx % basis_block; idx /= basis_block;
+	auto basis_i_abs = basis_i_rel + basis_i0;
+	auto chirality = idx % n_chiralities; idx /= n_chiralities;
+	auto vec_i = idx % vec_n; idx /= vec_n;
+	auto sc = idx % coarse_osites; idx /= coarse_osites;
+
+        assert(chirality == 0 || chirality == 1);
+
+        auto needs_split = fine_n_virtual%2 == 1;
+        long fine_n_virtual_half = fine_n_virtual/2;
+
+	decltype(INNER_PRODUCT(basis_p[0](0), fine_p[0](0))) reduce = Zero();
+
+	for (long fine_virtual_i=0; fine_virtual_i<fine_n_virtual_half; fine_virtual_i++) {
+	  long fine_virtual_i_chirality = fine_virtual_i + chirality * fine_n_virtual_half;
+	  for(long j=0; j<sizes_v[sc]; ++j) {
+	    long sf = lut_v[sc][j];
+	    reduce = reduce + INNER_PRODUCT(basis_p[basis_i_rel*fine_n_virtual + fine_virtual_i_chirality](sf), fine_p[vec_i*fine_n_virtual + fine_virtual_i_chirality](sf));
+	  }
+	}
+
+        if(needs_split) {
+          for(int j=0; j<sizes_v[sc]; ++j) {
+            int sf = lut_v[sc][j];
+            if (chirality == 0)
+              reduce = reduce + INNER_PRODUCT_UPPER_PART(basis_p[basis_i_rel*fine_n_virtual + fine_n_virtual_half](sf), fine_p[vec_i*fine_n_virtual + fine_n_virtual_half](sf));
+            else
+              reduce = reduce + INNER_PRODUCT_LOWER_PART(basis_p[basis_i_rel*fine_n_virtual + fine_n_virtual_half](sf), fine_p[vec_i*fine_n_virtual + fine_n_virtual_half](sf));
+          }
+        }
+
+	long coarse_virtual_i_chirality = (basis_i_abs + chirality * basis_n) / coarse_virtual_size;
+	long coarse_i_chirality = (basis_i_abs + chirality * basis_n) % coarse_virtual_size;
+	convertType(coarse_p[vec_i*coarse_n_virtual + coarse_virtual_i_chirality][sc](coarse_i_chirality), TensorRemove(reduce));
+      });
+
+    VECTOR_VIEW_CLOSE_POINTER(basis_v,basis_p);
+  }
+
+  VECTOR_VIEW_CLOSE_POINTER(fine_v,fine_p);
+  VECTOR_VIEW_CLOSE_POINTER(coarse_v,coarse_p);
+}
+
+
 template<class vobj,class CComplex,int basis_virtual_size,class VLattice,class T_singlet>
 inline void vectorizableBlockPromote_gptdefault(PVector<Lattice<iVector<CComplex, basis_virtual_size>>>&   coarse,
 				                long                                                       coarse_n_virtual,
@@ -1054,7 +1157,7 @@ void runBenchmark(int* argc, char*** argv) {
   BENCH_PROJECT_VERSION(parchange_lut, basis_normal, lut);                                PRINT_PROJECT_VERSION(parchange_lut);
   // BENCH_PROJECT_VERSION(parchange_chiral, basis_single);                                  PRINT_PROJECT_VERSION(parchange_chiral);
   // BENCH_PROJECT_VERSION(parchange_fused, basis_normal_fused);                             PRINT_PROJECT_VERSION(parchange_fused);
-  // BENCH_PROJECT_VERSION(parchange_lut_chiral, basis_single, lut);                         PRINT_PROJECT_VERSION(parchange_lut_chiral);
+  BENCH_PROJECT_VERSION(parchange_lut_chiral, basis_single, lut);                         PRINT_PROJECT_VERSION(parchange_lut_chiral);
   // BENCH_PROJECT_VERSION(parchange_lut_fused, basis_normal_fused, lut);                    PRINT_PROJECT_VERSION(parchange_lut_fused);
   // BENCH_PROJECT_VERSION(parchange_chiral_fused, basis_single_fused);                      PRINT_PROJECT_VERSION(parchange_chiral_fused);
   // BENCH_PROJECT_VERSION(parchange_lut_chiral_fused, basis_single_fused, lut);             PRINT_PROJECT_VERSION(parchange_lut_chiral_fused);
