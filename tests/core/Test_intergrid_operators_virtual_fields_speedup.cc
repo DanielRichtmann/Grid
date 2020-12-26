@@ -922,6 +922,142 @@ inline void vectorizableBlockPromote_parchange_lut(PVector<Lattice<iVector<CComp
 }
 
 
+template<class vobj,class CComplex,int basis_virtual_size,class VLattice,class T_singlet>
+inline void vectorizableBlockPromote_parchange_lut_chiral(PVector<Lattice<iVector<CComplex, basis_virtual_size>>>&   coarse,
+				                          long                                                       coarse_n_virtual,
+				                          const PVector<Lattice<vobj>>&                              fine,
+				                          long                                                       fine_n_virtual,
+				                          const VLattice&                                            basis,
+				                          long                                                       basis_n_virtual,
+				                          const CoarseningLookupTable<T_singlet>&                    lut,
+				                          long                                                       basis_n_block)
+{
+
+  const long n_chiralities = 2;
+
+  assert(fine.size() > 0 && coarse.size() > 0 && basis.size() > 0);
+
+  assert(basis.size() % basis_n_virtual == 0);
+  long basis_n = basis.size() / basis_n_virtual;
+
+  assert(fine.size() % fine_n_virtual == 0);
+  long fine_n = fine.size() / fine_n_virtual;
+
+  assert(coarse.size() % coarse_n_virtual == 0);
+  long coarse_n = coarse.size() / coarse_n_virtual;
+
+  assert(fine_n == coarse_n);
+  long vec_n = fine_n;
+
+  assert((basis_n * n_chiralities) % coarse_n_virtual == 0);
+  long coarse_virtual_size = (basis_n * n_chiralities) / coarse_n_virtual;
+
+  assert(coarse_virtual_size == basis_virtual_size);
+
+  GridBase *fine_grid   = fine[0].Grid();
+  GridBase *coarse_grid = coarse[0].Grid();
+
+  long fine_osites = fine_grid->oSites();
+
+  assert(fine_grid->_ndimension == coarse_grid->_ndimension);
+  assert(lut.gridsMatch(coarse_grid, fine_grid));
+
+  assert(fine_n_virtual == basis_n_virtual);
+
+  assert(basis_n == basis_virtual_size*coarse_n_virtual/n_chiralities);
+
+  auto rlut_v = lut.ReverseView();
+
+  VECTOR_VIEW_OPEN_POINTER(fine,fine_v,fine_p,AcceleratorWriteDiscard);
+  VECTOR_VIEW_OPEN_POINTER(coarse,coarse_v,coarse_p,AcceleratorRead);
+
+  for (long basis_i0=0;basis_i0<basis_n;basis_i0+=basis_n_block) {
+    long basis_i1 = std::min(basis_i0 + basis_n_block, basis_n);
+    long basis_block = basis_i1 - basis_i0;
+    VECTOR_VIEW_OPEN_POINTER(basis.slice(basis_i0*fine_n_virtual,basis_i1*fine_n_virtual),basis_v,basis_p,AcceleratorRead);
+
+    accelerator_for(_idx, fine_osites*vec_n, vobj::Nsimd(), {
+
+	auto idx = _idx;
+	auto vec_i = idx % vec_n; idx /= vec_n;
+	auto sf = idx % fine_osites; idx /= fine_osites;
+	auto sc = rlut_v[sf];
+
+#ifdef GRID_SIMT
+	typename vobj::tensor_reduced::scalar_object cA;
+	typename vobj::scalar_object cAx;
+#else
+	typename vobj::tensor_reduced cA;
+	vobj cAx;
+#endif
+
+        auto needs_split = fine_n_virtual%2 == 1;
+        long fine_n_virtual_half = fine_n_virtual/2;
+
+        if (needs_split) { // handle virtual field in the middle
+          decltype(cAx) fine_t, fine_accum_t;
+          typedef decltype(loadChirality<0>(coalescedRead(fine_v[0][0]))) calcHalfVector;
+          calcHalfVector fine_upper_t = Zero();
+          calcHalfVector fine_lower_t = Zero();
+          if (basis_i0 == 0)
+            fine_t = Zero();
+          else
+            fine_t = fine_p[vec_i*fine_n_virtual + fine_n_virtual_half](sf);
+
+          for(long basis_i_rel=0; basis_i_rel<basis_block; basis_i_rel++) {
+            long basis_i_abs = basis_i_rel + basis_i0;
+            long coarse_virtual_i_upper = (basis_i_abs + 0 * basis_n) / coarse_virtual_size;
+            long coarse_virtual_i_lower = (basis_i_abs + 1 * basis_n) / coarse_virtual_size;
+            long coarse_i_upper = (basis_i_abs + 0 * basis_n) % coarse_virtual_size;
+            long coarse_i_lower = (basis_i_abs + 1 * basis_n) % coarse_virtual_size;
+
+            auto coarse_upper_t = coalescedRead(coarse_p[vec_i*coarse_n_virtual + coarse_virtual_i_upper][sc](coarse_i_upper));
+            auto coarse_lower_t = coalescedRead(coarse_p[vec_i*coarse_n_virtual + coarse_virtual_i_lower][sc](coarse_i_lower));
+            auto basis_t = basis_p[basis_i_rel*fine_n_virtual + fine_n_virtual_half](sf);
+
+            fine_upper_t = fine_upper_t + coarse_upper_t * loadChirality<0>(basis_t);
+            fine_lower_t = fine_lower_t + coarse_lower_t * loadChirality<1>(basis_t);
+          }
+          writeChirality<0>(fine_accum_t, fine_upper_t);
+          writeChirality<1>(fine_accum_t, fine_lower_t);
+
+          fine_t = fine_t + fine_accum_t;
+          coalescedWrite(fine_p[vec_i*fine_n_virtual + fine_n_virtual_half][sf], fine_t);
+        }
+
+        for(long chirality=0; chirality<n_chiralities; chirality++) {
+          for (long fine_virtual_i=0; fine_virtual_i<fine_n_virtual_half; fine_virtual_i++) {
+            long fine_virtual_i_chirality = fine_virtual_i + chirality * fine_n_virtual_half;
+
+            decltype(cAx) fine_t;
+            if (basis_i0 == 0)
+              fine_t = Zero();
+            else
+              fine_t = fine_p[vec_i*fine_n_virtual + fine_virtual_i_chirality](sf);
+
+            for(long basis_i_rel=0; basis_i_rel<basis_block; basis_i_rel++) {
+              long basis_i_abs = basis_i_rel + basis_i0;
+              long coarse_virtual_i_chirality = (basis_i_abs + chirality * basis_n) / coarse_virtual_size;
+              long coarse_i_chirality = (basis_i_abs + chirality * basis_n) % coarse_virtual_size;
+              convertType(cA,TensorRemove(coalescedRead(coarse_p[vec_i*coarse_n_virtual + coarse_virtual_i_chirality][sc](coarse_i_chirality))));
+              auto prod = cA*basis_p[basis_i_rel*fine_n_virtual + fine_virtual_i_chirality](sf);
+              convertType(cAx,prod);
+              fine_t = fine_t + cAx;
+            }
+
+            coalescedWrite(fine_p[vec_i*fine_n_virtual + fine_virtual_i_chirality][sf], fine_t);
+          }
+        }
+    });
+
+    VECTOR_VIEW_CLOSE_POINTER(basis_v,basis_p);
+  }
+
+  VECTOR_VIEW_CLOSE_POINTER(fine_v,fine_p);
+  VECTOR_VIEW_CLOSE_POINTER(coarse_v,coarse_p);
+}
+
+
 template<typename vCoeff_t>
 void runBenchmark(int* argc, char*** argv) {
   // precision
@@ -1254,7 +1390,7 @@ void runBenchmark(int* argc, char*** argv) {
   BENCH_PROMOTE_VERSION(parchange_lut, basis_normal, lut);                                PRINT_PROMOTE_VERSION(parchange_lut);
   // BENCH_PROMOTE_VERSION(parchange_chiral, basis_single);                                  PRINT_PROMOTE_VERSION(parchange_chiral);
   // BENCH_PROMOTE_VERSION(parchange_fused, basis_normal_fused);                             PRINT_PROMOTE_VERSION(parchange_fused);
-  // BENCH_PROMOTE_VERSION(parchange_lut_chiral, basis_single, lut);                         PRINT_PROMOTE_VERSION(parchange_lut_chiral);
+  BENCH_PROMOTE_VERSION(parchange_lut_chiral, basis_single, lut);                         PRINT_PROMOTE_VERSION(parchange_lut_chiral);
   // BENCH_PROMOTE_VERSION(parchange_lut_fused, basis_normal_fused, lut);                    PRINT_PROMOTE_VERSION(parchange_lut_fused);
   // BENCH_PROMOTE_VERSION(parchange_chiral_fused, basis_single_fused);                      PRINT_PROMOTE_VERSION(parchange_chiral_fused);
   // BENCH_PROMOTE_VERSION(parchange_lut_chiral_fused, basis_single_fused, lut);             PRINT_PROMOTE_VERSION(parchange_lut_chiral_fused);
