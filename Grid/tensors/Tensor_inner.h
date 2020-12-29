@@ -448,6 +448,124 @@ template<class l,class r> accelerator_inline
   return ret;
 }
 
+
+//////////////////////
+// Just for testing (AGAIN AGAIN AGAIN)
+//////////////////////
+
+accelerator_inline ComplexF innerProductUpperPart(const ComplexF &l,const ComplexF &r){  return innerProduct(l,r); }
+accelerator_inline ComplexD innerProductUpperPart(const ComplexD &l,const ComplexD &r){  return innerProduct(l,r); }
+accelerator_inline RealD    innerProductUpperPart(const RealD    &l,const RealD    &r){  return innerProduct(l,r); }
+accelerator_inline RealF    innerProductUpperPart(const RealF    &l,const RealF    &r){  return innerProduct(l,r); }
+
+accelerator_inline vComplexD innerProductUpperPart(const vComplexD &l,const vComplexD &r){  return innerProduct(l,r); }
+accelerator_inline vRealD    innerProductUpperPart(const vRealD    &l,const vRealD    &r){  return innerProduct(l,r); }
+
+accelerator_inline vComplexF innerProductUpperPart(const vComplexF &l,const vComplexF &r){  return innerProduct(l,r); }
+accelerator_inline vRealF    innerProductUpperPart(const vRealF    &l,const vRealF    &r){  return innerProduct(l,r); }
+
+// Now do it for vector, matrix, scalar
+// sfinae on spinor or coarsened
+template<class l,class r,int N,typename std::enable_if<N%2 == 0,void>::type* = nullptr> accelerator_inline
+  auto innerProductUpperPart (const iVector<l,N>& lhs,const iVector<r,N>& rhs) -> iScalar<decltype(innerProductUpperPart(lhs._internal[0],rhs._internal[0]))>
+{
+  typedef decltype(innerProductUpperPart(lhs._internal[0],rhs._internal[0])) ret_t;
+  iScalar<ret_t> ret;
+  zeroit(ret);
+  constexpr int Nhalf=N/2;
+  for(int c1=0;c1<Nhalf;c1++){
+    ret._internal += innerProductUpperPart(lhs._internal[c1],rhs._internal[c1]);
+  }
+  return ret;
+}
+template<class l,class r,int N,typename std::enable_if<N%2 != 0,void>::type* = nullptr> accelerator_inline
+  auto innerProductUpperPart (const iVector<l,N>& lhs,const iVector<r,N>& rhs) -> iScalar<decltype(innerProductUpperPart(lhs._internal[0],rhs._internal[0]))>
+{
+  typedef decltype(innerProductUpperPart(lhs._internal[0],rhs._internal[0])) ret_t;
+  iScalar<ret_t> ret;
+  zeroit(ret);
+  for(int c1=0;c1<N;c1++){
+    ret._internal += innerProductUpperPart(lhs._internal[c1],rhs._internal[c1]);
+  }
+  return ret;
+}
+template<class l,class r,int N> accelerator_inline
+  auto innerProductUpperPart (const iMatrix<l,N>& lhs,const iMatrix<r,N>& rhs) -> iScalar<decltype(innerProductUpperPart(lhs._internal[0][0],rhs._internal[0][0]))>
+{
+  typedef decltype(innerProductUpperPart(lhs._internal[0][0],rhs._internal[0][0])) ret_t;
+  iScalar<ret_t> ret;
+  ret=Zero();
+  for(int c1=0;c1<N;c1++){
+    for(int c2=0;c2<N;c2++){
+      ret._internal+=innerProductUpperPart(lhs._internal[c1][c2],rhs._internal[c1][c2]);
+    }}
+  return ret;
+}
+template<class l,class r> accelerator_inline
+  auto innerProductUpperPart (const iScalar<l>& lhs,const iScalar<r>& rhs) -> iScalar<decltype(innerProductUpperPart(lhs._internal,rhs._internal))>
+{
+  typedef decltype(innerProductUpperPart(lhs._internal,rhs._internal)) ret_t;
+  iScalar<ret_t> ret;
+  ret._internal = innerProductUpperPart(lhs._internal,rhs._internal);
+  return ret;
+}
+
+accelerator_inline ComplexF innerProductLowerPart(const ComplexF &l,const ComplexF &r){  return innerProduct(l,r); }
+accelerator_inline ComplexD innerProductLowerPart(const ComplexD &l,const ComplexD &r){  return innerProduct(l,r); }
+accelerator_inline RealD    innerProductLowerPart(const RealD    &l,const RealD    &r){  return innerProduct(l,r); }
+accelerator_inline RealF    innerProductLowerPart(const RealF    &l,const RealF    &r){  return innerProduct(l,r); }
+
+accelerator_inline vComplexD innerProductLowerPart(const vComplexD &l,const vComplexD &r){  return innerProduct(l,r); }
+accelerator_inline vRealD    innerProductLowerPart(const vRealD    &l,const vRealD    &r){  return innerProduct(l,r); }
+
+accelerator_inline vComplexF innerProductLowerPart(const vComplexF &l,const vComplexF &r){  return innerProduct(l,r); }
+accelerator_inline vRealF    innerProductLowerPart(const vRealF    &l,const vRealF    &r){  return innerProduct(l,r); }
+
+// Now do it for vector, matrix, scalar
+// sfinae on spinor or coarsened
+template<class l,class r,int N,typename std::enable_if<N%2 == 0,void>::type* = nullptr> accelerator_inline
+  auto innerProductLowerPart (const iVector<l,N>& lhs,const iVector<r,N>& rhs) -> iScalar<decltype(innerProductLowerPart(lhs._internal[0],rhs._internal[0]))>
+{
+  typedef decltype(innerProductLowerPart(lhs._internal[0],rhs._internal[0])) ret_t;
+  iScalar<ret_t> ret;
+  zeroit(ret);
+  constexpr int Nhalf=N/2;
+  for(int c1=Nhalf;c1<N;c1++){
+    ret._internal += innerProductLowerPart(lhs._internal[c1],rhs._internal[c1]);
+  }
+  return ret;
+}
+template<class l,class r,int N,typename std::enable_if<N%2 != 0,void>::type* = nullptr> accelerator_inline
+  auto innerProductLowerPart (const iVector<l,N>& lhs,const iVector<r,N>& rhs) -> iScalar<decltype(innerProductLowerPart(lhs._internal[0],rhs._internal[0]))>
+{
+  typedef decltype(innerProductLowerPart(lhs._internal[0],rhs._internal[0])) ret_t;
+  iScalar<ret_t> ret;
+  zeroit(ret);
+  for(int c1=0;c1<N;c1++){
+    ret._internal += innerProductLowerPart(lhs._internal[c1],rhs._internal[c1]);
+  }
+  return ret;
+}
+template<class l,class r,int N> accelerator_inline
+  auto innerProductLowerPart (const iMatrix<l,N>& lhs,const iMatrix<r,N>& rhs) -> iScalar<decltype(innerProductLowerPart(lhs._internal[0][0],rhs._internal[0][0]))>
+{
+  typedef decltype(innerProductLowerPart(lhs._internal[0][0],rhs._internal[0][0])) ret_t;
+  iScalar<ret_t> ret;
+  ret=Zero();
+  for(int c1=0;c1<N;c1++){
+    for(int c2=0;c2<N;c2++){
+      ret._internal+=innerProductLowerPart(lhs._internal[c1][c2],rhs._internal[c1][c2]);
+    }}
+  return ret;
+}
+template<class l,class r> accelerator_inline
+  auto innerProductLowerPart (const iScalar<l>& lhs,const iScalar<r>& rhs) -> iScalar<decltype(innerProductLowerPart(lhs._internal,rhs._internal))>
+{
+  typedef decltype(innerProductLowerPart(lhs._internal,rhs._internal)) ret_t;
+  iScalar<ret_t> ret;
+  ret._internal = innerProductLowerPart(lhs._internal,rhs._internal);
+  return ret;
+}
 //////////////////////
 // Keep same precison
 //////////////////////
