@@ -37,26 +37,21 @@ using namespace Grid;
 
 
 // #define IP_D2 // NOTE: this halves performance on CPUs
-// #define IP_D
 #define IP_NORMAL
+
 
 #if defined(IP_D2) // as it is originally in gpt
 #define INNER_PRODUCT innerProductD2
 #define INNER_PRODUCT_LOWER_PART innerProductLowerPartD2
 #define INNER_PRODUCT_UPPER_PART innerProductUpperPartD2
 #pragma message("compiling with IP_D2")
-#elif defined(IP_D) // other version with 'D' rather than 'D2'
-#define INNER_PRODUCT innerProductD
-#define INNER_PRODUCT_LOWER_PART innerProductLowerPartD
-#define INNER_PRODUCT_UPPER_PART innerProductUpperPartD
-#pragma message("compiling with IP_D")
 #elif defined(IP_NORMAL) // other version with ' ' rather than 'D2'
 #define INNER_PRODUCT innerProduct
 #define INNER_PRODUCT_LOWER_PART innerProductLowerPart
 #define INNER_PRODUCT_UPPER_PART innerProductUpperPart
 #pragma message("compiling with IP_NORMAL")
 #else
-#error Either one of IP_D2, IP_D, or IP_NORMAL needs to be defined
+#error Either one of IP_D2 or IP_NORMAL needs to be defined
 #endif
 
 
@@ -84,6 +79,7 @@ accelerator_inline auto loadChirality(const iVector<iSinglet<vobj>,nbasis>& in) 
   return ret;
 }
 
+
 template<int lohi,typename vobj,typename std::enable_if<isGridFundamental<vobj>::value && (lohi == 0 || lohi == 1),void>::type* = nullptr>
 accelerator_inline void writeChirality(iSpinColourVector<vobj>& out, const iHalfSpinColourVector<vobj>& in) {
   constexpr int s_offset = lohi * 2;
@@ -98,28 +94,6 @@ accelerator_inline void writeChirality(iVector<iSinglet<vobj>,nbasis>& out, cons
 
   for(int n=0; n<nsingle; n++)
     out(n_offset + n) = in(n);
-}
-
-
-template<typename vobj,typename std::enable_if<isGridFundamental<vobj>::value,void>::type* = nullptr>
-accelerator_inline iScalar<typename GridTypeMapper<vobj>::scalar_object> // TypeMapper because no scalar_object in fundamentals
-fineGrainedCoalescedRead(const iSpinColourVector<vobj>& in, int j) {
-  assert(0 <= j < Nc * Ns);
-  int c = j % Nc;
-  int s = j / Nc;
-
-  iScalar<typename GridTypeMapper<vobj>::scalar_object> ret(coalescedRead(in()(s)(c)));
-  // ret._internal = coalescedRead(in()(s)(c));
-  return ret;
-}
-
-template<typename vobj,typename std::enable_if<isGridFundamental<vobj>::value,void>::type* = nullptr>
-accelerator_inline void fineGrainedCoalescedWrite(iSpinColourVector<vobj>& out, const iScalar<typename GridTypeMapper<vobj>::scalar_object> & in, int j) {
-  assert(0 <= j < Nc * Ns);
-  int c = j % Nc;
-  int s = j / Nc;
-
-  coalescedWrite(out()(s)(c), TensorRemove(in));
 }
 
 
@@ -1331,7 +1305,7 @@ void runBenchmark(int* argc, char*** argv) {
   double promote_nbytes_nbasis              = promote_bytes_per_fine_site_nbasis * UGrid_f->gSites() * nIter;
 
   // promote -- christoph's counting in the gpt benchmark
-  double promote_flops_per_fine_site_gpt = (1.0 * (fine_complex * nbasis * flops_per_cmul + fine_complex * (nbasis - 1)) * flops_per_cadd) * nvec;
+  double promote_flops_per_fine_site_gpt = (1.0 * (fine_complex * nbasis * flops_per_cmul + fine_complex * (nbasis - 1) * flops_per_cadd)) * nvec;
   double promote_flops_gpt               = promote_flops_per_fine_site_gpt * UGrid_f->gSites() * nIter;
   double promote_nbytes_gpt              = (((nbasis + 1) * fine_floats) * UGrid_f->gSites()
                                          + coarse_floats * UGrid_c->gSites())

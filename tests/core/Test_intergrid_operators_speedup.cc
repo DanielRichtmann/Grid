@@ -37,26 +37,21 @@ using namespace Grid;
 
 
 // #define IP_D2 // NOTE: this halves performance on CPUs
-// #define IP_D
 #define IP_NORMAL
+
 
 #if defined(IP_D2) // as it is originally in gpt
 #define INNER_PRODUCT innerProductD2
 #define INNER_PRODUCT_LOWER_PART innerProductLowerPartD2
 #define INNER_PRODUCT_UPPER_PART innerProductUpperPartD2
 #pragma message("compiling with IP_D2")
-#elif defined(IP_D) // other version with 'D' rather than 'D2'
-#define INNER_PRODUCT innerProductD
-#define INNER_PRODUCT_LOWER_PART innerProductLowerPartD
-#define INNER_PRODUCT_UPPER_PART innerProductUpperPartD
-#pragma message("compiling with IP_D")
 #elif defined(IP_NORMAL) // other version with ' ' rather than 'D2'
 #define INNER_PRODUCT innerProduct
 #define INNER_PRODUCT_LOWER_PART innerProductLowerPart
 #define INNER_PRODUCT_UPPER_PART innerProductUpperPart
 #pragma message("compiling with IP_NORMAL")
 #else
-#error Either one of IP_D2, IP_D, or IP_NORMAL needs to be defined
+#error Either one of IP_D2 or IP_NORMAL needs to be defined
 #endif
 
 
@@ -84,6 +79,7 @@ accelerator_inline auto loadChirality(const iVector<iSinglet<vobj>,nbasis>& in) 
   return ret;
 }
 
+
 template<int lohi,typename vobj,typename std::enable_if<isGridFundamental<vobj>::value && (lohi == 0 || lohi == 1),void>::type* = nullptr>
 accelerator_inline void writeChirality(iSpinColourVector<vobj>& out, const iHalfSpinColourVector<vobj>& in) {
   constexpr int s_offset = lohi * 2;
@@ -99,6 +95,8 @@ accelerator_inline void writeChirality(iVector<iSinglet<vobj>,nbasis>& out, cons
   for(int n=0; n<nsingle; n++)
     out(n_offset + n) = in(n);
 }
+
+
 template<class ScalarField>
 class CoarseningLookupTable {
 public:
@@ -275,15 +273,6 @@ void fillProjector(const std::vector<Lattice<vobj>>& basisVectors, Lattice<iVect
 
   for(int i=0;i<basisVectors.size();i++) basisVectors_v[i].ViewClose();
 }
-
-
-// needed below
-#define VECTOR_VIEW_OPEN(l,v,mode)				\
-  Vector< decltype(l[0].View(mode)) > v; v.reserve(l.size());	\
-  for(int k=0;k<l.size();k++)				\
-    v.push_back(l[k].View(mode));
-#define VECTOR_VIEW_CLOSE(v)				\
-  for(int k=0;k<v.size();k++) v[k].ViewClose();
 
 
 int readFromCommandLineInt(int* argc, char*** argv, const std::string& option, int defaultValue) {
