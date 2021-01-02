@@ -119,6 +119,7 @@ int main (int argc, char ** argv)
     U[mu] = PeekIndex<LorentzIndex>(Umu,mu);
   }
 
+#if 0
   { // Naive wilson implementation
     ref = Zero();
     for(int mu=0;mu<Nd;mu++){
@@ -144,6 +145,7 @@ int main (int argc, char ** argv)
     }
   }
   ref = -0.5*ref;
+#endif
   RealD mass=0.1;
 
   typename WilsonFermionR::ImplParams params;
