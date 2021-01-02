@@ -78,6 +78,13 @@ int main(int argc, char **argv) {
     std::cout << GridLogMessage << "Read in " << inputXml << std::endl;
   }
 
+  if(GridCmdOptionExists(argv, argv + argc, "--config")) {
+    std::string config = GridCmdOptionPayload(argv, argv + argc, "--config");
+    assert(config.length() != 0);
+    FieldMetaData header;
+    NerscIO::readConfiguration(Umu_d,header,config);
+  }
+
   checkParameterValidity(mgParams);
   std::cout << mgParams << std::endl;
 
