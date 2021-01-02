@@ -31,8 +31,10 @@
 
 #include <Grid/Grid.h>
 
-// see Grid/qcd/action/fermion/WilsonCloverFermion for description
+NAMESPACE_BEGIN(Grid);
 
+// see Grid/qcd/action/fermion/WilsonCloverFermion for description
+//
 // Modifications done here:
 //
 // Grid: clover term = 12x12 matrix per site
@@ -51,8 +53,30 @@
 // - Here:    2*12 + 42    =  66 words -> 2.55 x less
 //
 // These improvements directly translate to wall-clock time
-
-NAMESPACE_BEGIN(Grid);
+//
+// Data layout:
+//
+// - diagonal and triangle part as separate lattice fields,
+//   this was faster than as 1 combined field on all tested machines
+// - diagonal: as expected
+// - triangle: store upper right triangle in row major order
+// - graphical:
+//        0  1  2  3  4
+//           5  6  7  8
+//              9 10 11 = upper right triangle indices
+//                12 13
+//                   14
+//     0
+//        1
+//           2
+//              3       = diagonal indices
+//                 4
+//                    5
+//     0
+//     1  5
+//     2  6  9          = lower left triangle indices
+//     3  7 10 12
+//     4  8 11 13 14
 
 template<class Impl>
 class FasterWilsonCloverFermion : public WilsonCloverFermion<Impl> {
@@ -64,7 +88,7 @@ public:
 
   static constexpr int Nred      = Nc * Nhs;        // 6
   static constexpr int Nblock    = Nhs;             // 2
-  static constexpr int Ndiag     = Nred;            // 6
+  static constexpr int Ndiagonal = Nred;            // 6
   static constexpr int Ntriangle = (Nred - 1) * Nc; // 15
 
   /////////////////////////////////////////////
@@ -76,7 +100,7 @@ public:
   static_assert(Nd == 4 && Nc == 3 && Ns == 4 && Impl::Dimension == 3, "Wrong dimensions");
   INHERIT_IMPL_TYPES(Impl);
 
-  template<typename vtype> using iImplCloverDiagonal = iScalar<iVector<iVector<vtype, Ndiag>,     Nblock>>;
+  template<typename vtype> using iImplCloverDiagonal = iScalar<iVector<iVector<vtype, Ndiagonal>, Nblock>>;
   template<typename vtype> using iImplCloverTriangle = iScalar<iVector<iVector<vtype, Ntriangle>, Nblock>>;
 
   typedef iImplCloverDiagonal<Simd> SiteCloverDiagonal;
@@ -104,38 +128,38 @@ public:
                             const WilsonAnisotropyCoefficients& clover_anisotropy = WilsonAnisotropyCoefficients(),
                             const ImplParams& impl_p = ImplParams())
     : WilsonCloverFermion<Impl>(_Umu, Fgrid, Hgrid, _mass, _csw_r, _csw_t, clover_anisotropy, impl_p)
-    , Diag(&Fgrid),        Triangle(&Fgrid)
-    , DiagEven(&Hgrid),    TriangleEven(&Hgrid)
-    , DiagOdd(&Hgrid),     TriangleOdd(&Hgrid)
-    , DiagInv(&Fgrid),     TriangleInv(&Fgrid)
-    , DiagInvEven(&Hgrid), TriangleInvEven(&Hgrid)
-    , DiagInvOdd(&Hgrid),  TriangleInvOdd(&Hgrid)
+    , Diagonal(&Fgrid),        Triangle(&Fgrid)
+    , DiagonalEven(&Hgrid),    TriangleEven(&Hgrid)
+    , DiagonalOdd(&Hgrid),     TriangleOdd(&Hgrid)
+    , DiagonalInv(&Fgrid),     TriangleInv(&Fgrid)
+    , DiagonalInvEven(&Hgrid), TriangleInvEven(&Hgrid)
+    , DiagonalInvOdd(&Hgrid),  TriangleInvOdd(&Hgrid)
   {
     double t0 = usecond();
-    convertLayout(this->CloverTerm, Diag, Triangle);
-    convertLayout(this->CloverTermEven, DiagEven, TriangleEven);
-    convertLayout(this->CloverTermOdd, DiagOdd, TriangleOdd);
+    convertLayout(this->CloverTerm, Diagonal, Triangle);
+    convertLayout(this->CloverTermEven, DiagonalEven, TriangleEven);
+    convertLayout(this->CloverTermOdd, DiagonalOdd, TriangleOdd);
 
-    convertLayout(this->CloverTermInv, DiagInv, TriangleInv);
-    convertLayout(this->CloverTermInvEven, DiagInvEven, TriangleInvEven);
-    convertLayout(this->CloverTermInvOdd, DiagInvOdd, TriangleInvOdd);
+    convertLayout(this->CloverTermInv, DiagonalInv, TriangleInv);
+    convertLayout(this->CloverTermInvEven, DiagonalInvEven, TriangleInvEven);
+    convertLayout(this->CloverTermInvOdd, DiagonalInvOdd, TriangleInvOdd);
 
     // TODO: set original clover fields to zero size
     // BUT:  keep them around if we want to apply MDeriv
     double t1 = usecond();
-    std::cout << GridLogMessage << "FasterWilsonCloverFermion: layout conversions took " << (t1-t0)/1e6 << " seconds" << std::endl;
+    std::cout << GridLogDebug << "FasterWilsonCloverFermion: layout conversions took " << (t1-t0)/1e6 << " seconds" << std::endl;
   }
 
 
-  void convertLayout(const CloverField& full, CloverDiagonalField& diag, CloverTriangleField& triangle) {
-    conformable(full.Grid(), diag.Grid());
+  void convertLayout(const CloverField& full, CloverDiagonalField& diagonal, CloverTriangleField& triangle) {
+    conformable(full.Grid(), diagonal.Grid());
     conformable(full.Grid(), triangle.Grid());
 
-    diag.Checkerboard()     = full.Checkerboard();
+    diagonal.Checkerboard()     = full.Checkerboard();
     triangle.Checkerboard() = full.Checkerboard();
 
     autoView(full_v,     full,     AcceleratorRead);
-    autoView(diag_v,     diag,     AcceleratorWrite);
+    autoView(diagonal_v, diagonal, AcceleratorWrite);
     autoView(triangle_v, triangle, AcceleratorWrite);
 
     // NOTE: this function cannot be 'private' since nvcc forbids this for kernels
@@ -151,7 +175,7 @@ public:
               int i = s_row_block * Nc + c_row;
               int j = s_col_block * Nc + c_col;
               if(i == j)
-                diag_v[ss]()(block)(i) = full_v[ss]()(s_row, s_col)(c_row, c_col);
+                diagonal_v[ss]()(block)(i) = full_v[ss]()(s_row, s_col)(c_row, c_col);
               else if(i < j)
                 triangle_v[ss]()(block)(triangle_index(i, j)) = full_v[ss]()(s_row, s_col)(c_row, c_col);
               else
@@ -167,12 +191,12 @@ public:
   void Mooee(const FermionField& in, FermionField& out) override {
     if(in.Grid()->_isCheckerBoarded) {
       if(in.Checkerboard() == Odd) {
-        MooeeInternalImpl(in, out, DiagOdd, TriangleOdd);
+        MooeeInternalImpl(in, out, DiagonalOdd, TriangleOdd);
       } else {
-        MooeeInternalImpl(in, out, DiagEven, TriangleEven);
+        MooeeInternalImpl(in, out, DiagonalEven, TriangleEven);
       }
     } else {
-      MooeeInternalImpl(in, out, Diag, Triangle);
+      MooeeInternalImpl(in, out, Diagonal, Triangle);
     }
   }
 
@@ -185,12 +209,12 @@ public:
   void MooeeInv(const FermionField& in, FermionField& out) override {
     if(in.Grid()->_isCheckerBoarded) {
       if(in.Checkerboard() == Odd) {
-        MooeeInternalImpl(in, out, DiagInvOdd, TriangleInvOdd);
+        MooeeInternalImpl(in, out, DiagonalInvOdd, TriangleInvOdd);
       } else {
-        MooeeInternalImpl(in, out, DiagInvEven, TriangleInvEven);
+        MooeeInternalImpl(in, out, DiagonalInvEven, TriangleInvEven);
       }
     } else {
-      MooeeInternalImpl(in, out, DiagInv, TriangleInv);
+      MooeeInternalImpl(in, out, DiagonalInv, TriangleInv);
     }
   }
 
@@ -202,18 +226,18 @@ public:
 
   void MooeeInternalImpl(const FermionField&        in,
                          FermionField&              out,
-                         const CloverDiagonalField& diag,
+                         const CloverDiagonalField& diagonal,
                          const CloverTriangleField& triangle) {
     assert(in.Checkerboard() == Odd || in.Checkerboard() == Even);
     out.Checkerboard() = in.Checkerboard();
     conformable(in.Grid(), out.Grid());
-    conformable(in.Grid(), diag.Grid());
+    conformable(in.Grid(), diagonal.Grid());
     conformable(in.Grid(), triangle.Grid());
 
 #if defined(GRID_CUDA) || defined(GRID_HIP)
-    MooeeKernel_gpu(in.oSites(), in, out, diag, triangle);
+    MooeeKernel_gpu(in.oSites(), in, out, diagonal, triangle);
 #else
-    MooeeKernel_cpu(in.oSites(), in, out, diag, triangle);
+    MooeeKernel_cpu(in.oSites(), in, out, diagonal, triangle);
 #endif
   }
 
@@ -221,9 +245,9 @@ public:
   void MooeeKernel_gpu(int                        Nsite,
                        const FermionField&        in,
                        FermionField&              out,
-                       const CloverDiagonalField& diag,
+                       const CloverDiagonalField& diagonal,
                        const CloverTriangleField& triangle) {
-    autoView(diag_v,     diag,     AcceleratorRead);
+    autoView(diagonal_v, diagonal, AcceleratorRead);
     autoView(triangle_v, triangle, AcceleratorRead);
     autoView(in_v,       in,       AcceleratorRead);
     autoView(out_v,      out,      AcceleratorWrite);
@@ -233,17 +257,17 @@ public:
     accelerator_for(ss, Nsite, Simd::Nsimd(), {
       CalcSpinor res;
       CalcSpinor in_t = in_v(ss);
-      auto diag_t = diag_v(ss);
+      auto diagonal_t = diagonal_v(ss);
       auto triangle_t = triangle_v(ss);
       for(int block=0; block<Nhs; block++) {
         int s_start = block*Nhs;
         for(int i=0; i<Nred; i++) {
           int si = s_start + i/Nc, ci = i%Nc;
-          res()(si)(ci) = diag_t()(block)(i) * in_t()(si)(ci);
+          res()(si)(ci) = diagonal_t()(block)(i) * in_t()(si)(ci);
           for(int j=0; j<Nred; j++) {
             if (j == i) continue;
             int sj = s_start + j/Nc, cj = j%Nc;
-            res()(si)(ci) = res()(si)(ci)+ triangle_elem(triangle_t, block, i, j) * in_t()(sj)(cj);
+            res()(si)(ci) = res()(si)(ci) + triangle_elem(triangle_t, block, i, j) * in_t()(sj)(cj);
           };
         };
       };
@@ -255,9 +279,9 @@ public:
   void MooeeKernel_cpu(int                        Nsite,
                        const FermionField&        in,
                        FermionField&              out,
-                       const CloverDiagonalField& diag,
+                       const CloverDiagonalField& diagonal,
                        const CloverTriangleField& triangle) {
-    autoView(diag_v,     diag,     CpuRead);
+    autoView(diagonal_v, diagonal, CpuRead);
     autoView(triangle_v, triangle, CpuRead);
     autoView(in_v,       in,       CpuRead);
     autoView(out_v,      out,      CpuWrite);
@@ -325,7 +349,7 @@ public:
     thread_for(ss, Nsite, {
       CalcSpinor res;
       CalcSpinor in_t = in_v[ss];
-      auto diag_t = diag_v[ss];
+      auto diag_t     = diagonal_v[ss]; // "diag" instead of "diagonal" here to make code below easier to read
       auto triangle_t = triangle_v[ss];
 
       // upper half
@@ -382,7 +406,7 @@ public:
                   +           triangle_t()(0)(13) * in_cc_1_0
                   +           triangle_t()(0)(14) * in_cc_1_1;
       res()(1)(2) =               diag_t()(0)( 5) * in_t()(1)(2)
-                  + conjugate(        res()(1)( 2));
+                  + conjugate(       res()(1)( 2));
 
       vstream(out_v[ss]()(0)(0), res()(0)(0));
       vstream(out_v[ss]()(0)(1), res()(0)(1));
@@ -463,12 +487,12 @@ public:
 private:
 
   template<typename vobj>
-  accelerator_inline vobj triangle_elem(const iImplCloverTriangle<vobj>& triang, int block, int i, int j) {
+  accelerator_inline vobj triangle_elem(const iImplCloverTriangle<vobj>& triangle, int block, int i, int j) {
     assert(i != j);
     if(i < j) {
-      return triang()(block)(triangle_index(i, j));
+      return triangle()(block)(triangle_index(i, j));
     } else { // i > j
-      return conjugate(triang()(block)(triangle_index(i, j)));
+      return conjugate(triangle()(block)(triangle_index(i, j)));
     }
   }
 
@@ -488,8 +512,8 @@ private:
 
 private:
 
-  CloverDiagonalField Diag,    DiagEven,    DiagOdd;
-  CloverDiagonalField DiagInv, DiagInvEven, DiagInvOdd;
+  CloverDiagonalField Diagonal,    DiagonalEven,    DiagonalOdd;
+  CloverDiagonalField DiagonalInv, DiagonalInvEven, DiagonalInvOdd;
 
   CloverTriangleField Triangle,    TriangleEven,    TriangleOdd;
   CloverTriangleField TriangleInv, TriangleInvEven, TriangleInvOdd;
