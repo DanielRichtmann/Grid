@@ -51,6 +51,16 @@ std::vector<int> readFromCommandlineIvec(int*                    argc,
   return ret;
 }
 
+int readFromCommandLineInt(int* argc, char*** argv, const std::string& option, int defaultValue) {
+  std::string arg;
+  int         ret = defaultValue;
+  if(GridCmdOptionExists(*argv, *argv + *argc, option)) {
+    arg = GridCmdOptionPayload(*argv, *argv + *argc, option);
+    GridCmdOptionInt(arg, ret);
+  }
+  return ret;
+}
+
 int main(int argc, char** argv) {
   Grid_init(&argc, &argv);
 
@@ -60,6 +70,7 @@ int main(int argc, char** argv) {
 
   const int  nbasis    = NBASIS; static_assert((nbasis & 0x1) == 0, "");
   const int  nb        = nbasis/2;
+  const int  nIter     = readFromCommandLineInt(&argc, &argv, "--niter", 1000);
   Coordinate blockSize = readFromCommandlineIvec(&argc, &argv, "--blocksize", {2, 2, 2, 2});
 
   std::cout << GridLogMessage << "Compiled with nbasis = " << nbasis << " -> nb = " << nb << std::endl;
