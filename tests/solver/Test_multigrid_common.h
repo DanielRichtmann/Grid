@@ -41,11 +41,21 @@ Zero zero;
 template<class vobj>
 void writeFieldVectorized(Lattice<vobj> const& field, std::ostream& ofs) {
   auto tensor_size = sizeof(vobj);
-  auto field_view = field.View();
+  auto field_view = field.View(CpuRead);
   std::cout << GridLogMessage << "field_view.size() = " << field_view.size() << " tensor_size = " << tensor_size
             << " norm2 = " << norm2(field) << std::endl;
   ofs.write((char*)&field_view[0], field_view.size() * tensor_size);
   assert(ofs.fail() == 0);
+}
+
+template<class vobj>
+void readFieldVectorized(Lattice<vobj>& field, std::istream& ifs) {
+  auto tensor_size = sizeof(vobj);
+  auto field_view  = field.View(CpuWrite);
+  std::cout << GridLogMessage << "field_view.size() = " << field_view.size()
+            << " tensor_size = " << tensor_size << " norm2 = " << norm2(field) << std::endl;
+  ifs.read((char*)&field_view[0], field_view.size() * tensor_size);
+  assert(ifs.fail() == 0);
 }
 
 // clang-format off
@@ -161,6 +171,7 @@ public:
   virtual void runChecks(RealD tolerance)              = 0;
   virtual void reportTimings()                         = 0;
   virtual void writeVectors(std::ofstream& ofs)        = 0;
+  virtual void readVectors(std::ifstream& ifs)         = 0;
 };
 
 template<class Fobj, class CComplex, int nBasis, int nCoarserLevels, class Matrix>
@@ -278,6 +289,44 @@ public:
       kCycle(in, out);
     else
       vCycle(in, out);
+
+    // nCycle(in, out);
+  }
+
+  void nCycle(FineVector const &in, FineVector &out) {
+
+    _SolveTotalTimer.Start();
+
+    RealD inputNorm = norm2(in);
+
+    FineVector fineTmp(in.Grid());
+
+    auto maxSmootherIter = _MultiGridParams.smootherMaxOuterIter[_CurrentLevel] * _MultiGridParams.smootherMaxInnerIter[_CurrentLevel];
+
+    TrivialPrecon<FineVector>                      fineTrivialPreconditioner;
+    FlexibleGeneralisedMinimalResidual<FineVector> fineFGMRES(_MultiGridParams.smootherTol[_CurrentLevel],
+                                                              maxSmootherIter,
+                                                              fineTrivialPreconditioner,
+                                                              _MultiGridParams.smootherMaxInnerIter[_CurrentLevel],
+                                                              false);
+
+    MdagMLinearOperator<FineDiracMatrix, FineVector> fineMdagMOp(_FineMatrix);
+    MdagMLinearOperator<FineDiracMatrix, FineVector> fineSmootherMdagMOp(_SmootherMatrix);
+
+    _SolveSmootherTimer.Start();
+    fineFGMRES(fineSmootherMdagMOp, in, out);
+    _SolveSmootherTimer.Stop();
+
+    fineMdagMOp.Op(out, fineTmp);
+    fineTmp = in - fineTmp;
+    auto r = norm2(fineTmp);
+    auto residualAfterPostSmoother = std::sqrt(r / inputNorm);
+
+    std::cout << GridLogMG << " Level " << _CurrentLevel << ": N-cycle: Input norm = " << std::sqrt(inputNorm)
+              << " Post-Smoother residual = " << residualAfterPostSmoother
+              << std::endl;
+
+    _SolveTotalTimer.Stop();
   }
 
   void vCycle(FineVector const &in, FineVector &out) {
@@ -580,6 +629,12 @@ public:
       writeFieldVectorized(_Aggregates.subspace[n], ofs);
     }
   }
+
+  void readVectors(std::ifstream& ifs) {
+    for(int n = 0; n < nBasis; n++) {
+      readFieldVectorized(_Aggregates.subspace[n], ifs);
+    }
+  }
 };
 
 // Specialization for the coarsest level
@@ -664,6 +719,7 @@ public:
   }
 
   void writeVectors(std::ofstream& ofs) {}
+  void readVectors(std::ifstream& ifs) {}
 };
 
 template<class Fobj, class CComplex, int nBasis, int nLevels, class Matrix>

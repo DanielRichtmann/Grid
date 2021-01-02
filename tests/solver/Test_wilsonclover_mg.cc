@@ -118,6 +118,12 @@ int main(int argc, char **argv) {
   TrivialPrecon<LatticeFermion> TrivialPrecon;
   auto MGPreconDwc = createMGInstance<vSpinColourVector, vTComplex, nbasis, WilsonCloverFermionR>(mgParams, levelInfo, Dwc, Dwc);
 
+  if(GridCmdOptionExists(argv, argv + argc, "--read")) {
+    std::ifstream ifs(outputFilename("vectors", FGrid, nbasis), ios::in | ios::binary);
+    MGPreconDwc->readVectors(ifs);
+    ifs.close();
+  }
+
   MGPreconDwc->setup();
 
   if(GridCmdOptionExists(argv, argv + argc, "--runchecks")) {
