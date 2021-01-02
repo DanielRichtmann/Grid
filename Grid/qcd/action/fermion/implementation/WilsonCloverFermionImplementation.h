@@ -67,10 +67,13 @@ void WilsonCloverFermion<Impl>::Mdag(const FermionField &in, FermionField &out)
 template <class Impl>
 void WilsonCloverFermion<Impl>::ImportGauge(const GaugeField &_Umu)
 {
+  double t0 = usecond();
   WilsonFermion<Impl>::ImportGauge(_Umu);
+  double t1 = usecond();
   GridBase *grid = _Umu.Grid();
   typename Impl::GaugeLinkField Bx(grid), By(grid), Bz(grid), Ex(grid), Ey(grid), Ez(grid);
 
+  double t2 = usecond();
   // Compute the field strength terms mu>nu
   WilsonLoops<Impl>::FieldStrength(Bx, _Umu, Zdir, Ydir);
   WilsonLoops<Impl>::FieldStrength(By, _Umu, Zdir, Xdir);
@@ -79,6 +82,7 @@ void WilsonCloverFermion<Impl>::ImportGauge(const GaugeField &_Umu)
   WilsonLoops<Impl>::FieldStrength(Ey, _Umu, Tdir, Ydir);
   WilsonLoops<Impl>::FieldStrength(Ez, _Umu, Tdir, Zdir);
 
+  double t3 = usecond();
   // Compute the Clover Operator acting on Colour and Spin
   // multiply here by the clover coefficients for the anisotropy
   CloverTerm  = fillCloverYZ(Bx) * csw_r;
@@ -89,9 +93,11 @@ void WilsonCloverFermion<Impl>::ImportGauge(const GaugeField &_Umu)
   CloverTerm += fillCloverZT(Ez) * csw_t;
   CloverTerm += diag_mass;
 
+  double t4 = usecond();
   int lvol = _Umu.Grid()->lSites();
   int DimRep = Impl::Dimension;
 
+  double t5 = usecond();
   {
     autoView(CTv,CloverTerm,CpuRead);
     autoView(CTIv,CloverTermInv,CpuWrite);
@@ -125,6 +131,7 @@ void WilsonCloverFermion<Impl>::ImportGauge(const GaugeField &_Umu)
     });
   }
 
+  double t6 = usecond();
   // Separate the even and odd parts
   pickCheckerboard(Even, CloverTermEven, CloverTerm);
   pickCheckerboard(Odd, CloverTermOdd, CloverTerm);
@@ -137,6 +144,17 @@ void WilsonCloverFermion<Impl>::ImportGauge(const GaugeField &_Umu)
 
   pickCheckerboard(Even, CloverTermInvDagEven, adj(CloverTermInv));
   pickCheckerboard(Odd, CloverTermInvDagOdd, adj(CloverTermInv));
+  double t7 = usecond();
+
+  std::cout << GridLogMessage << "WilsonCloverFermion::ImportGauge timings:"
+            << " WilsonFermion::Importgauge = " << (t1 - t0) / 1e6
+            << ", allocations = "               << (t2 - t1) / 1e6
+            << ", field strength = "            << (t3 - t2) / 1e6
+            << ", fill clover = "               << (t4 - t3) / 1e6
+            << ", misc = "                      << (t5 - t4) / 1e6
+            << ", inversions = "                << (t6 - t5) / 1e6
+            << ", pick cbs = "                  << (t7 - t6) / 1e6
+            << std::endl;
 }
 
 template <class Impl>
