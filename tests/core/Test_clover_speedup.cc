@@ -7,7 +7,7 @@
     Copyright (C) 2015 - 2020
 
     Author: Daniel Richtmann <daniel.richtmann@gmail.com>
-            Nils Meyer <nils.meyer@ur.de>
+            Nils Meyer       <nils.meyer@ur.de>
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -28,409 +28,9 @@
 /*  END LEGAL */
 
 #include <Grid/Grid.h>
+#include "FasterWilsonCloverFermion.h"
 
 using namespace Grid;
-
-
-// index within the triangle portion
-accelerator_inline int index_triang(int i, int j) {
-  const int Nred = 6;
-  if (i == j)
-    return 0;
-  else if (i < j)
-    return Nred * (Nred - 1) / 2 - (Nred - i) * (Nred - i - 1) / 2 + j - i - 1;
-  else // i > j
-    return Nred * (Nred - 1) / 2 - (Nred - j) * (Nred - j - 1) / 2 + i - j - 1;
-}
-
-
-template<class CloverFullField, class CloverDiagonalField, class CloverTriangleField>
-void convert_clover(const CloverFullField& clover_full, CloverDiagonalField& clover_diag, CloverTriangleField& clover_triang) {
-  autoView(clover_full_v, clover_full, AcceleratorRead);
-  autoView(clover_diag_v, clover_diag, AcceleratorWrite);
-  autoView(clover_triang_v, clover_triang, AcceleratorWrite);
-
-  accelerator_for(ss, clover_full.Grid()->oSites(), 1, {
-    for(int s_row = 0; s_row < Ns; s_row++) {
-      for(int s_col = 0; s_col < Ns; s_col++) {
-        if(abs(s_row - s_col) > 1 || s_row + s_col == 3) continue;
-        int block       = s_row / Nhs;
-        int s_row_block = s_row % Nhs;
-        int s_col_block = s_col % Nhs;
-        for(int c_row = 0; c_row < Nc; c_row++) {
-          for(int c_col = 0; c_col < Nc; c_col++) {
-            int i = s_row_block * Nc + c_row;
-            int j = s_col_block * Nc + c_col;
-            if(i == j)
-              clover_diag_v[ss]()(block)(i) = clover_full_v[ss]()(s_row, s_col)(c_row, c_col);
-            else if(i < j)
-              clover_triang_v[ss]()(block)(index_triang(i, j)) = clover_full_v[ss]()(s_row, s_col)(c_row, c_col);
-            else
-              continue;
-          }
-        }
-      }
-    }
-  });
-}
-
-
-template<class Impl>
-class CloverTermFast {
-  /////////////////////////////////////////////
-  // Type definitions
-  /////////////////////////////////////////////
-
-public:
-
-  static_assert(Nd == 4 && Nc == 3 && Ns == 4 && Impl::Dimension == 3, "Wrong dimensions");
-  INHERIT_IMPL_TYPES(Impl);
-
-  template<typename vtype>
-  using iImplCloverDiagonal = iScalar<iVector<iVector<vtype, 6>, 2>>; // TODO: real numbers
-  template<typename vtype>
-  using iImplCloverTriangle = iScalar<iVector<iVector<vtype, 15>, 2>>;
-
-  typedef iImplCloverDiagonal<Simd> SiteCloverDiagonal;
-  typedef iImplCloverTriangle<Simd> SiteCloverTriangle;
-
-  typedef Lattice<SiteCloverDiagonal> CloverDiagonalField;
-  typedef Lattice<SiteCloverTriangle> CloverTriangleField;
-
-  /////////////////////////////////////////////
-  // Member Functions
-  /////////////////////////////////////////////
-
-public:
-
-  CloverTermFast(WilsonCloverFermion<Impl>& clover_full)
-    : clov_diag(clover_full.GaugeGrid())
-    , clov_triang(clover_full.GaugeGrid())
-    , pf_dist_L1(-1)
-    , pf_dist_L2(-1)
-  {
-    convert_clover(clover_full.CloverTerm, clov_diag, clov_triang);
-  }
-
-  void Mooee(const FermionField& in, FermionField& out) {
-#if defined(GRID_CUDA)||defined(GRID_HIP)
-    Mooee_gpu(in, out);
-#else
-    Mooee_cpu(in, out);
-#endif
-  }
-
-  template<typename vCoeff_t> accelerator_inline vCoeff_t
-  triang_elem(const iImplCloverTriangle<vCoeff_t>& triang, int block, int i, int j) {
-    assert(i != j);
-    if (i < j) {
-      return triang()(block)(index_triang(i, j));
-    } else { // i > j
-      return conjugate(triang()(block)(index_triang(i, j)));
-    }
-  }
-
-  // same as Mooee_original_withsplit_nostream in other file
-  void Mooee_gpu(const FermionField& in, FermionField& out) {
-    conformable(in.Grid(), out.Grid());
-    conformable(clov_diag.Grid(), in.Grid());
-    conformable(clov_diag.Grid(), clov_triang.Grid());
-    out.Checkerboard() = in.Checkerboard();
-    autoView(clov_diag_v, clov_diag, AcceleratorRead);
-    autoView(clov_triang_v, clov_triang, AcceleratorRead);
-    autoView(in_v, in, AcceleratorRead);
-    autoView(out_v, out, AcceleratorWrite);
-    typedef decltype(coalescedRead(out_v[0])) calcSpinor;
-    const uint64_t Nsite = clov_diag.Grid()->oSites();
-    accelerator_for(ss, Nsite, Simd::Nsimd(), {
-      calcSpinor res;
-      calcSpinor in_t = in_v(ss);
-      auto clov_diag_t = clov_diag_v(ss);
-      auto clov_triang_t = clov_triang_v(ss);
-      for(int block=0; block<Nhs; block++) {
-        int s_start = block*Nhs;
-        for(int i=0; i<Nred; i++) {
-          int si = s_start + i/Nc, ci = i%Nc;
-          res()(si)(ci) = clov_diag_t()(block)(i) * in_t()(si)(ci);
-          for(int j=0; j<Nred; j++) {
-            if (j == i) continue;
-            int sj = s_start + j/Nc, cj = j%Nc;
-            res()(si)(ci) = res()(si)(ci)+ triang_elem(clov_triang_t, block, i, j) * in_t()(sj)(cj);
-          };
-        };
-      };
-      coalescedWrite(out_v[ss], res);
-    });
-  }
-
-  // Nils: 1 PF = 4 CL = 6 SR = 256 B
-  // -> need 6 PF to prefetch 21 CL for the data within a block
-
-#if defined(A64FX) || defined(A64FXFIXEDSIZE)
-#define PREFETCH_DIAGONAL(BASE) {                                          \
-    uint64_t base_diag;                                                    \
-    uint64_t base_triang;                                                  \
-    const int pf_bytes = 256;
-                                                                           \
-    if ((pf_dist_L1 >= 0) && (ss + pf_dist_L1 < Nsite)) {                  \
-      base_diag   = (uint64_t)  &clov_diag_t()(pf_dist_L1+BASE)(0);        \
-      base_triang = (uint64_t)&clov_triang_t()(pf_dist_L1+BASE)(0);        \
-      for(int i=0; i<uiae; i+=pf_bytes) {
-        svprfd(svptrue_b64(), (int64_t*)(base_diag   + i), SV_PLDL1STRM); \
-      }
-      for(int i=0; i<uiae; i+=pf_bytes) {
-        svprfd(svptrue_b64(), (int64_t*)(base_triang + i), SV_PLDL1STRM); \
-      }
-      svprfd(svptrue_b64(), (int64_t*)(base_diag   +    0), SV_PLDL1STRM); \
-      svprfd(svptrue_b64(), (int64_t*)(base_diag   +  256), SV_PLDL1STRM); \
-      svprfd(svptrue_b64(), (int64_t*)(base_diag   +  512), SV_PLDL1STRM); \
-      svprfd(svptrue_b64(), (int64_t*)(base_diag   +  768), SV_PLDL1STRM); \
-      svprfd(svptrue_b64(), (int64_t*)(base_diag   + 1024), SV_PLDL1STRM); \
-      svprfd(svptrue_b64(), (int64_t*)(base_diag   + 1280), SV_PLDL1STRM); \
-      /*svprfd(svptrue_b64(), (int64_t*)(base_triang +    0), SV_PLDL1STRM); \
-      svprfd(svptrue_b64(), (int64_t*)(base_triang +  256), SV_PLDL1STRM); \
-      svprfd(svptrue_b64(), (int64_t*)(base_triang +  512), SV_PLDL1STRM); \
-      svprfd(svptrue_b64(), (int64_t*)(base_triang +  768), SV_PLDL1STRM); */ \
-    }                                                                      \
-                                                                           \
-    if ((pf_dist_L2 >= 0) && (ss + pf_dist_L2 < Nsite)) {                  \
-      base_diag   = (uint64_t)  &clov_diag_t()(pf_dist_L2+BASE)(0);        \
-      base_triang = (uint64_t)&clov_triang_t()(pf_dist_L2+BASE)(0);        \
-      svprfd(svptrue_b64(), (int64_t*)(base_diag   +    0), SV_PLDL2STRM); \
-      svprfd(svptrue_b64(), (int64_t*)(base_diag   +  256), SV_PLDL2STRM); \
-      svprfd(svptrue_b64(), (int64_t*)(base_diag   +  512), SV_PLDL2STRM); \
-      svprfd(svptrue_b64(), (int64_t*)(base_diag   +  768), SV_PLDL2STRM); \
-      svprfd(svptrue_b64(), (int64_t*)(base_diag   + 1024), SV_PLDL2STRM); \
-      svprfd(svptrue_b64(), (int64_t*)(base_diag   + 1280), SV_PLDL2STRM); \
-      /*svprfd(svptrue_b64(), (int64_t*)(base_triang +    0), SV_PLDL2STRM); \
-      svprfd(svptrue_b64(), (int64_t*)(base_triang +  256), SV_PLDL2STRM); \
-      svprfd(svptrue_b64(), (int64_t*)(base_triang +  512), SV_PLDL2STRM); \
-      svprfd(svptrue_b64(), (int64_t*)(base_triang +  768), SV_PLDL2STRM); */ \
-    }                                                                      \
-  }
-// NOTE: Played around with this but doesn't bring anything
-#elif defined(AVX512)
-#define PREFETCH_DIAGONAL(BASE) {                                          \
-    uint64_t base_diag;                                                    \
-    uint64_t base_triang;                                                  \
-                                                                           \
-    if ((pf_dist_L1 >= 0) && (ss + pf_dist_L1 < Nsite)) {                  \
-      base_diag   = (uint64_t)  &clov_diag_t()(pf_dist_L1+BASE)(0);        \
-      base_triang = (uint64_t)&clov_triang_t()(pf_dist_L1+BASE)(0);        \
-      _mm_prefetch((const char*)(base_diag   +    0), _MM_HINT_T0);               \
-      _mm_prefetch((const char*)(base_diag   +   64), _MM_HINT_T0);               \
-      _mm_prefetch((const char*)(base_diag   +  128), _MM_HINT_T0);               \
-      _mm_prefetch((const char*)(base_diag   +  192), _MM_HINT_T0);               \
-      _mm_prefetch((const char*)(base_diag   +  256), _MM_HINT_T0);               \
-      _mm_prefetch((const char*)(base_diag   +  320), _MM_HINT_T0);               \
-      _mm_prefetch((const char*)(base_triang +    0), _MM_HINT_T0);               \
-      _mm_prefetch((const char*)(base_triang +   64), _MM_HINT_T0);               \
-      _mm_prefetch((const char*)(base_triang +  128), _MM_HINT_T0);               \
-      _mm_prefetch((const char*)(base_triang +  192), _MM_HINT_T0);               \
-      _mm_prefetch((const char*)(base_triang +  256), _MM_HINT_T0);               \
-      _mm_prefetch((const char*)(base_triang +  320), _MM_HINT_T0);               \
-      _mm_prefetch((const char*)(base_triang +  384), _MM_HINT_T0);               \
-      _mm_prefetch((const char*)(base_triang +  448), _MM_HINT_T0);               \
-      _mm_prefetch((const char*)(base_triang +  512), _MM_HINT_T0);               \
-      _mm_prefetch((const char*)(base_triang +  576), _MM_HINT_T0);               \
-      _mm_prefetch((const char*)(base_triang +  640), _MM_HINT_T0);               \
-      _mm_prefetch((const char*)(base_triang +  704), _MM_HINT_T0);               \
-      _mm_prefetch((const char*)(base_triang +  768), _MM_HINT_T0);               \
-      _mm_prefetch((const char*)(base_triang +  832), _MM_HINT_T0);               \
-      _mm_prefetch((const char*)(base_triang +  896), _MM_HINT_T0);               \
-    }                                                                      \
-                                                                           \
-    if ((pf_dist_L2 >= 0) && (ss + pf_dist_L2 < Nsite)) {                  \
-      base_diag   = (uint64_t)  &clov_diag_t()(pf_dist_L2+BASE)(0);        \
-      base_triang = (uint64_t)&clov_triang_t()(pf_dist_L2+BASE)(0);        \
-      _mm_prefetch((const char*)(base_diag   +    0), _MM_HINT_T1);               \
-      _mm_prefetch((const char*)(base_diag   +   64), _MM_HINT_T1);               \
-      _mm_prefetch((const char*)(base_diag   +  128), _MM_HINT_T1);               \
-      _mm_prefetch((const char*)(base_diag   +  192), _MM_HINT_T1);               \
-      _mm_prefetch((const char*)(base_diag   +  256), _MM_HINT_T1);               \
-      _mm_prefetch((const char*)(base_diag   +  320), _MM_HINT_T1);               \
-      _mm_prefetch((const char*)(base_triang +    0), _MM_HINT_T1);               \
-      _mm_prefetch((const char*)(base_triang +   64), _MM_HINT_T1);               \
-      _mm_prefetch((const char*)(base_triang +  128), _MM_HINT_T1);               \
-      _mm_prefetch((const char*)(base_triang +  192), _MM_HINT_T1);               \
-      _mm_prefetch((const char*)(base_triang +  256), _MM_HINT_T1);               \
-      _mm_prefetch((const char*)(base_triang +  320), _MM_HINT_T1);               \
-      _mm_prefetch((const char*)(base_triang +  384), _MM_HINT_T1);               \
-      _mm_prefetch((const char*)(base_triang +  448), _MM_HINT_T1);               \
-      _mm_prefetch((const char*)(base_triang +  512), _MM_HINT_T1);               \
-      _mm_prefetch((const char*)(base_triang +  576), _MM_HINT_T1);               \
-      _mm_prefetch((const char*)(base_triang +  640), _MM_HINT_T1);               \
-      _mm_prefetch((const char*)(base_triang +  704), _MM_HINT_T1);               \
-      _mm_prefetch((const char*)(base_triang +  768), _MM_HINT_T1);               \
-      _mm_prefetch((const char*)(base_triang +  832), _MM_HINT_T1);               \
-      _mm_prefetch((const char*)(base_triang +  896), _MM_HINT_T1);               \
-    }                                                                      \
-  }
-#else
-#define PREFETCH_DIAGONAL(BASE)
-#endif
-
-    // same as Mooee_handunrolled_withsplit_withstream in other file
-    void
-    Mooee_cpu(const FermionField& in, FermionField& out) {
-    conformable(in.Grid(), out.Grid());
-    conformable(clov_diag.Grid(), in.Grid());
-    conformable(clov_diag.Grid(), clov_triang.Grid());
-    out.Checkerboard() = in.Checkerboard();
-    autoView(clov_diag_v, clov_diag, CpuRead);
-    autoView(clov_triang_v, clov_triang, CpuRead);
-    autoView(in_v, in, CpuRead);
-    autoView(out_v, out, CpuWrite);
-    typedef SiteSpinor calcSpinor;
-    const uint64_t Nsite = clov_diag.Grid()->oSites();
-    thread_for(ss, Nsite, {
-      calcSpinor res;
-      calcSpinor in_t = in_v(ss);
-      auto clov_diag_t = clov_diag_v(ss);
-      auto clov_triang_t = clov_triang_v(ss);
-
-      // upper half
-      PREFETCH_DIAGONAL(0);
-
-      auto in_cc_0_0 = conjugate(in_t()(0)(0)); // Nils: reduces number
-      auto in_cc_0_1 = conjugate(in_t()(0)(1)); // of conjugates from
-      auto in_cc_0_2 = conjugate(in_t()(0)(2)); // 30 to 20
-      auto in_cc_1_0 = conjugate(in_t()(1)(0));
-      auto in_cc_1_1 = conjugate(in_t()(1)(1));
-
-      res()(0)(0) =             clov_diag_t()(0)( 0)  * in_t()(0)(0)
-                  +           clov_triang_t()(0)( 0)  * in_t()(0)(1)
-                  +           clov_triang_t()(0)( 1)  * in_t()(0)(2)
-                  +           clov_triang_t()(0)( 2)  * in_t()(1)(0)
-                  +           clov_triang_t()(0)( 3)  * in_t()(1)(1)
-                  +           clov_triang_t()(0)( 4)  * in_t()(1)(2);
-
-      res()(0)(1) =           clov_triang_t()(0)( 0)  * in_cc_0_0;
-      res()(0)(1) = conjugate(          res()(0)( 1))
-                  +             clov_diag_t()(0)( 1)  * in_t()(0)(1)
-                  +           clov_triang_t()(0)( 5)  * in_t()(0)(2)
-                  +           clov_triang_t()(0)( 6)  * in_t()(1)(0)
-                  +           clov_triang_t()(0)( 7)  * in_t()(1)(1)
-                  +           clov_triang_t()(0)( 8)  * in_t()(1)(2);
-
-      res()(0)(2) =           clov_triang_t()(0)( 1)  * in_cc_0_0
-                  +           clov_triang_t()(0)( 5)  * in_cc_0_1;
-      res()(0)(2) = conjugate(          res()(0)( 2))
-                  +             clov_diag_t()(0)( 2)  * in_t()(0)(2)
-                  +           clov_triang_t()(0)( 9)  * in_t()(1)(0)
-                  +           clov_triang_t()(0)(10)  * in_t()(1)(1)
-                  +           clov_triang_t()(0)(11)  * in_t()(1)(2);
-
-      res()(1)(0) =           clov_triang_t()(0)( 2)  * in_cc_0_0
-                  +           clov_triang_t()(0)( 6)  * in_cc_0_1
-                  +           clov_triang_t()(0)( 9)  * in_cc_0_2;
-      res()(1)(0) = conjugate(          res()(1)( 0))
-                  +             clov_diag_t()(0)( 3)  * in_t()(1)(0)
-                  +           clov_triang_t()(0)(12)  * in_t()(1)(1)
-                  +           clov_triang_t()(0)(13)  * in_t()(1)(2);
-
-      res()(1)(1) =           clov_triang_t()(0)( 3)  * in_cc_0_0
-                  +           clov_triang_t()(0)( 7)  * in_cc_0_1
-                  +           clov_triang_t()(0)(10)  * in_cc_0_2
-                  +           clov_triang_t()(0)(12)  * in_cc_1_0;
-      res()(1)(1) = conjugate(          res()(1)( 1))
-                  +             clov_diag_t()(0)( 4)  * in_t()(1)(1)
-                  +           clov_triang_t()(0)(14)  * in_t()(1)(2);
-
-      res()(1)(2) =           clov_triang_t()(0)( 4)  * in_cc_0_0
-                  +           clov_triang_t()(0)( 8)  * in_cc_0_1
-                  +           clov_triang_t()(0)(11)  * in_cc_0_2
-                  +           clov_triang_t()(0)(13)  * in_cc_1_0
-                  +           clov_triang_t()(0)(14)  * in_cc_1_1;
-      res()(1)(2) = conjugate(          res()(1)( 2))
-                  +             clov_diag_t()(0)( 5)  * in_t()(1)(2);
-
-      vstream(out_v[ss]()(0)(0), res()(0)(0));
-      vstream(out_v[ss]()(0)(1), res()(0)(1));
-      vstream(out_v[ss]()(0)(2), res()(0)(2));
-      vstream(out_v[ss]()(1)(0), res()(1)(0));
-      vstream(out_v[ss]()(1)(1), res()(1)(1));
-      vstream(out_v[ss]()(1)(2), res()(1)(2));
-
-      // lower half
-      PREFETCH_DIAGONAL(1);
-
-      auto in_cc_2_0 = conjugate(in_t()(2)(0));
-      auto in_cc_2_1 = conjugate(in_t()(2)(1));
-      auto in_cc_2_2 = conjugate(in_t()(2)(2));
-      auto in_cc_3_0 = conjugate(in_t()(3)(0));
-      auto in_cc_3_1 = conjugate(in_t()(3)(1));
-
-      res()(2)(0) =             clov_diag_t()(1)( 0)  * in_t()(2)(0)
-                  +           clov_triang_t()(1)( 0)  * in_t()(2)(1)
-                  +           clov_triang_t()(1)( 1)  * in_t()(2)(2)
-                  +           clov_triang_t()(1)( 2)  * in_t()(3)(0)
-                  +           clov_triang_t()(1)( 3)  * in_t()(3)(1)
-                  +           clov_triang_t()(1)( 4)  * in_t()(3)(2);
-
-      res()(2)(1) =           clov_triang_t()(1)( 0)  * in_cc_2_0;
-      res()(2)(1) = conjugate(          res()(2)( 1))
-                  +             clov_diag_t()(1)( 1)  * in_t()(2)(1)
-                  +           clov_triang_t()(1)( 5)  * in_t()(2)(2)
-                  +           clov_triang_t()(1)( 6)  * in_t()(3)(0)
-                  +           clov_triang_t()(1)( 7)  * in_t()(3)(1)
-                  +           clov_triang_t()(1)( 8)  * in_t()(3)(2);
-
-      res()(2)(2) =           clov_triang_t()(1)( 1)  * in_cc_2_0
-                  +           clov_triang_t()(1)( 5)  * in_cc_2_1;
-      res()(2)(2) = conjugate(          res()(2)( 2))
-                  +             clov_diag_t()(1)( 2)  * in_t()(2)(2)
-                  +           clov_triang_t()(1)( 9)  * in_t()(3)(0)
-                  +           clov_triang_t()(1)(10)  * in_t()(3)(1)
-                  +           clov_triang_t()(1)(11)  * in_t()(3)(2);
-
-      res()(3)(0) =            clov_triang_t()(1)( 2) * in_cc_2_0
-                  +            clov_triang_t()(1)( 6) * in_cc_2_1
-                  +            clov_triang_t()(1)( 9) * in_cc_2_2;
-      res()(3)(0) = conjugate(          res()(3)( 0))
-                  +             clov_diag_t()(1)( 3)  * in_t()(3)(0)
-                  +           clov_triang_t()(1)(12)  * in_t()(3)(1)
-                  +           clov_triang_t()(1)(13)  * in_t()(3)(2);
-
-      res()(3)(1) =           clov_triang_t()(1)( 3)  * in_cc_2_0
-                  +           clov_triang_t()(1)( 7)  * in_cc_2_1
-                  +           clov_triang_t()(1)(10)  * in_cc_2_2
-                  +           clov_triang_t()(1)(12)  * in_cc_3_0;
-      res()(3)(1) = conjugate(          res()(3)( 1))
-                  +             clov_diag_t()(1)( 4)  * in_t()(3)(1)
-                  +           clov_triang_t()(1)(14)  * in_t()(3)(2);
-
-      res()(3)(2) =           clov_triang_t()(1)( 4)  * in_cc_2_0
-                  +           clov_triang_t()(1)( 8)  * in_cc_2_1
-                  +           clov_triang_t()(1)(11)  * in_cc_2_2
-                  +           clov_triang_t()(1)(13)  * in_cc_3_0
-                  +           clov_triang_t()(1)(14)  * in_cc_3_1;
-      res()(3)(2) = conjugate(          res()(3)( 2))
-                  +             clov_diag_t()(1)( 5)  * in_t()(3)(2);
-
-      vstream(out_v[ss]()(2)(0), res()(2)(0));
-      vstream(out_v[ss]()(2)(1), res()(2)(1));
-      vstream(out_v[ss]()(2)(2), res()(2)(2));
-      vstream(out_v[ss]()(3)(0), res()(3)(0));
-      vstream(out_v[ss]()(3)(1), res()(3)(1));
-      vstream(out_v[ss]()(3)(2), res()(3)(2));
-    });
-  }
-
-  /////////////////////////////////////////////
-  // Member Data
-  /////////////////////////////////////////////
-
-private:
-
-  CloverDiagonalField clov_diag;
-  CloverTriangleField clov_triang;
-  static constexpr int Nred = Nc * Nhs;
-
-public:
-
-  int pf_dist_L1, pf_dist_L2;
-};
 
 
 int readFromCommandLineInt(int* argc, char*** argv, const std::string& option, int defaultValue) {
@@ -449,6 +49,7 @@ int readFromCommandLineInt(int* argc, char*** argv, const std::string& option, i
   char _buf[1024];\
   sprintf(_buf, __VA_ARGS__);\
   std::cout << GridLogMessage << _buf;\
+  fflush(stdout);\
 }
 
 
@@ -487,6 +88,7 @@ void runBenchmark(int* argc, char*** argv) {
   // type definitions
   typedef WilsonImpl<vCoeff_t, FundamentalRepresentation, CoeffReal> WImpl;
   typedef WilsonCloverFermion<WImpl> WilsonCloverOperator;
+  typedef FasterWilsonCloverFermion<WImpl> FasterWilsonCloverOperator;
   typedef typename WilsonCloverOperator::FermionField Fermion;
   typedef typename WilsonCloverOperator::GaugeField Gauge;
 
@@ -510,32 +112,15 @@ void runBenchmark(int* argc, char*** argv) {
   double volume=1.0; for(int mu=0; mu<Nd; mu++) volume*=UGrid->_fdimensions[mu];
 
   // setup fermion operators
-  WilsonCloverOperator  Dwc(Umu, *UGrid, *UrbGrid, 0.5, 1.0, 1.0, anisParams, implParams);
-  CloverTermFast<WImpl> Dwc_fast(Dwc);
-
-  // warmup + measure dhop
-  grid_printf("hop warmup %s\n", precision.c_str()); fflush(stdout);
-  for(auto n : {1, 2, 3, 4, 5}) Dwc.Dhop(src, hop, 0);
-  grid_printf("hop measurement %s\n", precision.c_str()); fflush(stdout);
-  double t0 = usecond();
-  for(int n = 0; n < nIter; n++) Dwc.Dhop(src, hop, 0);
-  double t1 = usecond();
-  double secs_hop = (t1-t0)/1e6;
-
-  // warmup + measure reference clover
-  grid_printf("reference warmup %s\n", precision.c_str()); fflush(stdout);
-  for(auto n : {1, 2, 3, 4, 5}) Dwc.Mooee(src, ref);
-  grid_printf("reference measurement %s\n", precision.c_str()); fflush(stdout);
-  double t2 = usecond();
-  for(int n = 0; n < nIter; n++) Dwc.Mooee(src, ref);
-  double t3 = usecond();
-  double secs_ref = (t3-t2)/1e6;
+  WilsonCloverOperator     Dwc(Umu, *UGrid, *UrbGrid, 0.5, 1.0, 1.0, anisParams, implParams);
+  FasterWilsonCloverOperator Dwc_faster(Umu, *UGrid, *UrbGrid, 0.5, 1.0, 1.0, anisParams, implParams);
 
   // performance per site (use minimal values necessary)
   double hop_flop_per_site            = 1320; // Rich's Talk + what Peter uses
   double hop_byte_per_site            = (8 * 9 + 9 * 12) * 2 * getPrecision<vCoeff_t>::value * 4;
   double clov_flop_per_site           = 504; // Rich's Talk and 1412.2629
   double clov_byte_per_site           = (2 * 18 + 12 + 12) * 2 * getPrecision<vCoeff_t>::value * 4;
+  double clov_flop_per_site_performed = 1128;
   double clov_byte_per_site_performed = (12 * 12 + 12 + 12) * 2 * getPrecision<vCoeff_t>::value * 4;
 
   // total performance numbers
@@ -543,58 +128,46 @@ void runBenchmark(int* argc, char*** argv) {
   double hop_gbyte_total            = volume * nIter * hop_byte_per_site / 1e9;
   double clov_gflop_total           = volume * nIter * clov_flop_per_site / 1e9;
   double clov_gbyte_total           = volume * nIter * clov_byte_per_site / 1e9;
+  double clov_gflop_performed_total = volume * nIter * clov_flop_per_site_performed / 1e9;
   double clov_gbyte_performed_total = volume * nIter * clov_byte_per_site_performed / 1e9;
 
-  // output
+  // warmup + measure dhop
+  for(auto n : {1, 2, 3, 4, 5}) Dwc.Dhop(src, hop, 0);
+  double t0 = usecond();
+  for(int n = 0; n < nIter; n++) Dwc.Dhop(src, hop, 0);
+  double t1 = usecond();
+  double secs_hop = (t1-t0)/1e6;
   grid_printf("Performance(%35s, %s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n",
-              "hop", precision.c_str(), secs_hop, hop_gflop_total/secs_hop, hop_gbyte_total/secs_hop, secs_ref/secs_hop, secs_hop/secs_hop);
-  grid_printf("Performance(%35s, %s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n",
-              "reference", precision.c_str(), secs_ref, clov_gflop_total/secs_ref, clov_gbyte_total/secs_ref, secs_ref/secs_ref, secs_ref/secs_hop);
+              "hop", precision.c_str(), secs_hop, hop_gflop_total/secs_hop, hop_gbyte_total/secs_hop, 0.0, secs_hop/secs_hop);
 
-  // just so we see how well the ET performs in terms of traffic
-  grid_printf("Performance(%35s, %s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n",
-              "reference_performed", precision.c_str(), secs_ref, clov_gflop_total/secs_ref, clov_gbyte_performed_total/secs_ref, secs_ref/secs_ref, secs_ref/secs_hop);
+#define BENCH_CLOVER_KERNEL(KERNEL) { \
+  /* warmup + measure reference clover */ \
+  for(auto n : {1, 2, 3, 4, 5}) Dwc.KERNEL(src, hop); \
+  double t2 = usecond(); \
+  for(int n = 0; n < nIter; n++) Dwc.KERNEL(src, hop); \
+  double t3 = usecond(); \
+  double secs_ref = (t3-t2)/1e6; \
+  grid_printf("Performance(%35s, %s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n", \
+              "reference_"#KERNEL, precision.c_str(), secs_ref, clov_gflop_total/secs_ref, clov_gbyte_total/secs_ref, secs_ref/secs_ref, secs_ref/secs_hop); \
+  grid_printf("Performance(%35s, %s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n", /* to see how well the ET performs */  \
+              "reference_"#KERNEL"_performed", precision.c_str(), secs_ref, clov_gflop_performed_total/secs_ref, clov_gbyte_performed_total/secs_ref, secs_ref/secs_ref, secs_ref/secs_hop); \
+\
+  /* warmup + measure improved clover */ \
+  for(auto n : {1, 2, 3, 4, 5}) Dwc_faster.KERNEL(src, hop); \
+  double t4 = usecond(); \
+  for(int n = 0; n < nIter; n++) Dwc_faster.KERNEL(src, hop); \
+  double t5 = usecond(); \
+  double secs_res = (t5-t4)/1e6; \
+  grid_printf("Performance(%35s, %s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n", \
+              "improved_"#KERNEL, precision.c_str(), secs_res, clov_gflop_total/secs_res, clov_gbyte_total/secs_res, secs_ref/secs_res, secs_res/secs_hop); \
+}
 
-#if defined(SCAN_RANGE)
-  // read maximum pf distances from command line
-  const int max_pf_dist_L1 = readFromCommandLineInt(argc, argv, "--max_pf_dist_L1", 5);
-  const int max_pf_dist_L2 = readFromCommandLineInt(argc, argv, "--max_pf_dist_L2", 10);
+  BENCH_CLOVER_KERNEL(Mooee);
+  BENCH_CLOVER_KERNEL(MooeeDag);
+  BENCH_CLOVER_KERNEL(MooeeInv);
+  BENCH_CLOVER_KERNEL(MooeeInvDag);
 
-  // loop over pf distances
-  for(int pf_dist_L1=-1;         pf_dist_L1<=max_pf_dist_L1; pf_dist_L1++) {
-  for(int pf_dist_L2=pf_dist_L1; pf_dist_L2<=max_pf_dist_L2; pf_dist_L2++) {
-#else
-  // read pf distances from command line
-  const int pf_dist_L1 = readFromCommandLineInt(argc, argv, "--pf_dist_L1", -1);
-  const int pf_dist_L2 = readFromCommandLineInt(argc, argv, "--pf_dist_L2", -1);
-#endif
-
-  // set pf distances
-  Dwc_fast.pf_dist_L1 = pf_dist_L1;
-  Dwc_fast.pf_dist_L2 = pf_dist_L2;
-
-  // construct name
-  auto name = "improved_" + std::to_string(pf_dist_L1) + "_" + std::to_string(pf_dist_L2);
-
-  // warmup + measure improved clover
-  grid_printf("%s warmup %s\n", name.c_str(), precision.c_str()); fflush(stdout);
-  for(auto n : {1, 2, 3, 4, 5}) Dwc_fast.Mooee(src, res);
-  grid_printf("%s measurement %s\n", name.c_str(), precision.c_str()); fflush(stdout);
-  double t4 = usecond();
-  for(int n = 0; n < nIter; n++) Dwc_fast.Mooee(src, res);
-  double t5 = usecond();
-  assert(resultsAgree(ref, res, name.c_str()));
-  double secs_res = (t5-t4)/1e6;
-
-  // report
-  grid_printf("Performance(%35s, %s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n",
-              name.c_str(), precision.c_str(), secs_res, clov_gflop_total/secs_res, clov_gbyte_total/secs_res, secs_ref/secs_res, secs_res/secs_hop);
-
-#if defined(SCAN_RANGE)
-  }}
-#endif
-
-  grid_printf("finalize %s\n", precision.c_str()); fflush(stdout);
+  grid_printf("finalize %s\n", precision.c_str());
 }
 
 int main(int argc, char** argv) {

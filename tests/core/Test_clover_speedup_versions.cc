@@ -132,7 +132,6 @@ public:
   static_assert(Nd == 4 && Nc == 3 && Ns == 4 && Impl::Dimension == 3, "Wrong dimensions");
   INHERIT_IMPL_TYPES(Impl);
 
-  // need to use different types on CPU and GPU :/
   template<typename vtype>
   using iImplCloverDiagonal = iScalar<iVector<iVector<vtype, 6>, 2>>; // TODO: real numbers
   template<typename vtype>
@@ -958,17 +957,19 @@ void runBenchmark(int* argc, char*** argv) {
 #undef BENCH_CLOVER_VERSION
 
   // performance per site (use minimal values necessary)
-  double hop_flop_per_site = 1320; // Rich's Talk + what Peter uses
-  double hop_byte_per_site = (8 * 9 + 9 * 12) * 2 * getPrecision<vCoeff_t>::value * 4;
-  double clov_flop_per_site = 504; // Rich's Talk and 1412.2629
-  double clov_byte_per_site = (2 * 18 + 12 + 12) * 2 * getPrecision<vCoeff_t>::value * 4;
+  double hop_flop_per_site            = 1320; // Rich's Talk + what Peter uses
+  double hop_byte_per_site            = (8 * 9 + 9 * 12) * 2 * getPrecision<vCoeff_t>::value * 4;
+  double clov_flop_per_site           = 504; // Rich's Talk and 1412.2629
+  double clov_byte_per_site           = (2 * 18 + 12 + 12) * 2 * getPrecision<vCoeff_t>::value * 4;
+  double clov_flop_per_site_performed = 1128;
   double clov_byte_per_site_performed = (12 * 12 + 12 + 12) * 2 * getPrecision<vCoeff_t>::value * 4;
 
   // total performance numbers
-  double hop_gflop_total = volume * nIter * hop_flop_per_site / 1e9;
-  double hop_gbyte_total = volume * nIter * hop_byte_per_site / 1e9;
-  double clov_gflop_total = volume * nIter * clov_flop_per_site / 1e9;
-  double clov_gbyte_total = volume * nIter * clov_byte_per_site / 1e9;
+  double hop_gflop_total            = volume * nIter * hop_flop_per_site / 1e9;
+  double hop_gbyte_total            = volume * nIter * hop_byte_per_site / 1e9;
+  double clov_gflop_total           = volume * nIter * clov_flop_per_site / 1e9;
+  double clov_gbyte_total           = volume * nIter * clov_byte_per_site / 1e9;
+  double clov_gflop_performed_total = volume * nIter * clov_flop_per_site_performed / 1e9;
   double clov_gbyte_performed_total = volume * nIter * clov_byte_per_site_performed / 1e9;
 
 #define PRINT_CLOVER_VERSION(VERSION)\
@@ -991,9 +992,9 @@ void runBenchmark(int* argc, char*** argv) {
   PRINT_CLOVER_VERSION(handunrolled_withsplit_nostream);
   PRINT_CLOVER_VERSION(handunrolled_withsplit_withstream);
 
-  // just so we see how well the ET performs in terms of traffic
+  // just so we see how well the ET performs
   grid_printf("Performance(%50s, %s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n",
-              "reference_performed", precision.c_str(), secs_ref, clov_gflop_total/secs_ref, clov_gbyte_performed_total/secs_ref, secs_ref/secs_ref, secs_ref/secs_hop);
+              "reference_performed", precision.c_str(), secs_ref, clov_gflop_performed_total/secs_ref, clov_gbyte_performed_total/secs_ref, secs_ref/secs_ref, secs_ref/secs_hop);
 
   grid_printf("finalize %s\n", precision.c_str()); fflush(stdout);
 }
