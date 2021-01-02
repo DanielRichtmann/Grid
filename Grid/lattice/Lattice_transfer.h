@@ -207,11 +207,6 @@ inline void blockProject(Lattice<iVector<CComplex,nbasis > > &coarseData,
     accelerator_for( sc, coarse->oSites(), vobj::Nsimd(), {
 	convertType(coarseData_[sc](v),ip_[sc]);
     });
-
-    // improve numerical stability of projection
-    // |fine> = |fine> - <basis|fine> |basis>
-    ip=-ip;
-    blockZAXPY(fineDataRed,ip,Basis[v],fineDataRed); 
   }
 }
 

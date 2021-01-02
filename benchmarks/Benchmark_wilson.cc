@@ -197,11 +197,8 @@ int main (int argc, char ** argv)
   std::cout<<GridLogMessage << "Called Dw"<<std::endl;
   std::cout<<GridLogMessage << "flops per site " << single_site_flops << std::endl;
   std::cout<<GridLogMessage << "norm result "<< norm2(result)<<std::endl;
-  std::cout<<GridLogMessage << "norm ref    "<< norm2(ref)<<std::endl;
   std::cout<<GridLogMessage << "mflop/s =   "<< flops/(t1-t0)<<std::endl;
   std::cout<<GridLogMessage << "RF  GiB/s (base 2) =   "<< 1000000. * data/(t1-t0)<<std::endl;
-  err = ref-result;
-  std::cout<<GridLogMessage << "norm diff   "<< norm2(err)<<std::endl;
 
   Dw.Report();
   
@@ -221,6 +218,7 @@ int main (int argc, char ** argv)
     }
   }
 
+#if 0
   { // Naive wilson dag implementation
     ref = Zero();
     for(int mu=0;mu<Nd;mu++){
@@ -248,17 +246,10 @@ int main (int argc, char ** argv)
     }
   }
   ref = -0.5*ref;
+#endif
   Dw.Dhop(src,result,1);
   std::cout<<GridLogMessage << "Called DwDag"<<std::endl;
   std::cout<<GridLogMessage << "norm result "<< norm2(result)<<std::endl;
-  std::cout<<GridLogMessage << "norm ref    "<< norm2(ref)<<std::endl;
-  err = ref-result;
-  std::cout<<GridLogMessage << "norm diff   "<< norm2(err)<<std::endl;
-
-  // guard
-  double err1 = norm2(err);
-  assert(fabs(err0) < 1.0e-3);
-  assert(fabs(err1) < 1.0e-3);
 
   Grid_finalize();
 }
