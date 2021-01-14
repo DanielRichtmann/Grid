@@ -160,9 +160,9 @@ void runBenchmark(int* argc, char*** argv) {
 
 #define BENCH_CLOVER_KERNEL(KERNEL) { \
   /* warmup + measure reference clover */ \
-  for(auto n : {1, 2, 3, 4, 5}) Dwc.KERNEL(src, hop); \
+  for(auto n : {1, 2, 3, 4, 5}) Dwc.KERNEL(src, ref); \
   double t2 = usecond(); \
-  for(int n = 0; n < nIter; n++) Dwc.KERNEL(src, hop); \
+  for(int n = 0; n < nIter; n++) Dwc.KERNEL(src, ref); \
   double t3 = usecond(); \
   double secs_ref = (t3-t2)/1e6; \
   grid_printf("Performance(%35s, %s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n", \
@@ -171,13 +171,14 @@ void runBenchmark(int* argc, char*** argv) {
               "reference_"#KERNEL"_performed", precision.c_str(), secs_ref, clov_gflop_performed_total/secs_ref, clov_gbyte_performed_total/secs_ref, secs_ref/secs_ref, secs_ref/secs_hop); \
 \
   /* warmup + measure improved clover */ \
-  for(auto n : {1, 2, 3, 4, 5}) Dwc_faster.KERNEL(src, hop); \
+  for(auto n : {1, 2, 3, 4, 5}) Dwc_faster.KERNEL(src, res); \
   double t4 = usecond(); \
-  for(int n = 0; n < nIter; n++) Dwc_faster.KERNEL(src, hop); \
+  for(int n = 0; n < nIter; n++) Dwc_faster.KERNEL(src, res); \
   double t5 = usecond(); \
   double secs_res = (t5-t4)/1e6; \
   grid_printf("Performance(%35s, %s): %2.4f s, %6.0f GFlop/s, %6.0f GByte/s, speedup vs ref = %.2f, fraction of hop = %.2f\n", \
               "improved_"#KERNEL, precision.c_str(), secs_res, clov_gflop_total/secs_res, clov_gbyte_total/secs_res, secs_ref/secs_res, secs_res/secs_hop); \
+  assert(resultsAgree(ref, res, #KERNEL)); \
 }
 
   BENCH_CLOVER_KERNEL(Mooee);
