@@ -115,6 +115,24 @@ void runBenchmark(int* argc, char*** argv) {
   WilsonCloverOperator     Dwc(Umu, *UGrid, *UrbGrid, 0.5, 1.0, 1.0, anisParams, implParams);
   FasterWilsonCloverOperator Dwc_faster(Umu, *UGrid, *UrbGrid, 0.5, 1.0, 1.0, anisParams, implParams);
 
+#if 0
+  // now test the conversions
+  typename FasterWilsonCloverOperator::CloverField         tmp_ref(UGrid);  tmp_ref  = Dwc.CloverTerm;
+  typename FasterWilsonCloverOperator::CloverField         tmp_res(UGrid);  tmp_res  = Zero();
+  typename FasterWilsonCloverOperator::CloverField         tmp_diff(UGrid); tmp_diff = Zero();
+  typename FasterWilsonCloverOperator::CloverDiagonalField diagonal(UGrid); diagonal = Zero();
+  typename FasterWilsonCloverOperator::CloverTriangleField triangle(UGrid); diagonal = Zero();
+  Dwc_faster.convertLayout(tmp_ref, diagonal, triangle);
+  Dwc_faster.convertLayout(diagonal, triangle, tmp_res);
+  tmp_diff = tmp_ref - tmp_res;
+  std::cout << GridLogMessage << "conversion: ref, res, diff, eps"
+            << " " << norm2(tmp_ref)
+            << " " << norm2(tmp_res)
+            << " " << norm2(tmp_diff)
+            << " " << norm2(tmp_diff) / norm2(tmp_ref)
+            << std::endl;
+#endif
+
   // performance per site (use minimal values necessary)
   double hop_flop_per_site            = 1320; // Rich's Talk + what Peter uses
   double hop_byte_per_site            = (8 * 9 + 9 * 12) * 2 * getPrecision<vCoeff_t>::value * 4;
