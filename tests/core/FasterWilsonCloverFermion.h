@@ -115,6 +115,9 @@ public:
 
   typedef WilsonFermion<Impl> WilsonBase;
 
+  typedef iSinglet<Simd>    SiteMask;
+  typedef Lattice<SiteMask> MaskField;
+
   /////////////////////////////////////////////
   // Constructors
   /////////////////////////////////////////////
@@ -122,16 +125,19 @@ public:
 public:
 
   FasterWilsonCloverFermion(GaugeField& _Umu,
-                            GridCartesian& Fgrid,
-                            GridRedBlackCartesian& Hgrid,
-                            const RealD _mass,
-                            const RealD _csw_r = 0.0,
-                            const RealD _csw_t = 0.0,
-                            const WilsonAnisotropyCoefficients& clover_anisotropy = WilsonAnisotropyCoefficients(),
-                            const ImplParams& impl_p = ImplParams())
+			    GridCartesian& Fgrid,
+			    GridRedBlackCartesian& Hgrid,
+			    const RealD _mass,
+			    const RealD _csw_r = 0.0,
+			    const RealD _csw_t = 0.0,
+			    const RealD _cF = 1.0,
+			    const WilsonAnisotropyCoefficients& clover_anisotropy = WilsonAnisotropyCoefficients(),
+			    const ImplParams& impl_p = ImplParams())
     : WilsonBase(_Umu, Fgrid, Hgrid, _mass, impl_p, clover_anisotropy)
     , csw_r(_csw_r)
     , csw_t(_csw_t)
+    , cF(_cF)
+    , open_boundaries(impl_p.boundary_phases[Nd-1] == 0.0)
     , Diagonal(&Fgrid),        Triangle(&Fgrid)
     , DiagonalEven(&Hgrid),    TriangleEven(&Hgrid)
     , DiagonalOdd(&Hgrid),     TriangleOdd(&Hgrid)
@@ -139,6 +145,8 @@ public:
     , DiagonalInvEven(&Hgrid), TriangleInvEven(&Hgrid)
     , DiagonalInvOdd(&Hgrid),  TriangleInvOdd(&Hgrid)
     , Tmp(&Fgrid)
+    , BoundaryMask(&Fgrid)
+    , BoundaryMaskEven(&Hgrid), BoundaryMaskOdd(&Hgrid)
   {
     csw_r *= 0.5;
     csw_t *= 0.5;
@@ -146,6 +154,7 @@ public:
       csw_r /= clover_anisotropy.xi_0;
 
     ImportGauge(_Umu);
+    if (open_boundaries) SetupMasks();
   }
 
   /////////////////////////////////////////////
@@ -159,19 +168,51 @@ public:
   int          isTrivialEE() override { return 0; };
 
 
+  void Dhop(const FermionField& in, FermionField& out, int dag) override {
+    WilsonBase::Dhop(in, out, dag);
+    if(open_boundaries) ApplyBoundaryMask(out);
+  }
+
+
+  void DhopOE(const FermionField& in, FermionField& out, int dag) override {
+    WilsonBase::DhopOE(in, out, dag);
+    if(open_boundaries) ApplyBoundaryMask(out);
+  }
+
+
+  void DhopEO(const FermionField& in, FermionField& out, int dag) override {
+    WilsonBase::DhopEO(in, out, dag);
+    if(open_boundaries) ApplyBoundaryMask(out);
+  }
+
+
   void M(const FermionField& in, FermionField& out) override {
     out.Checkerboard() = in.Checkerboard();
-    this->Dhop(in, out, DaggerNo);
+    WilsonBase::Dhop(in, out, DaggerNo); // call base to save applying bc
     Mooee(in, Tmp);
     axpy(out, 1.0, out, Tmp);
+    if(open_boundaries) ApplyBoundaryMask(out);
   }
 
 
   void Mdag(const FermionField& in, FermionField& out) override {
     out.Checkerboard() = in.Checkerboard();
-    this->Dhop(in, out, DaggerYes);
+    WilsonBase::Dhop(in, out, DaggerYes);  // call base to save applying bc
     MooeeDag(in, Tmp);
     axpy(out, 1.0, out, Tmp);
+    if(open_boundaries) ApplyBoundaryMask(out);
+  }
+
+
+  void Meooe(const FermionField& in, FermionField& out) override {
+    WilsonBase::Meooe(in, out);
+    if(open_boundaries) ApplyBoundaryMask(out);
+  }
+
+
+  void MeooeDag(const FermionField& in, FermionField& out) override {
+    WilsonBase::MeooeDag(in, out);
+    if(open_boundaries) ApplyBoundaryMask(out);
   }
 
 
@@ -185,6 +226,7 @@ public:
     } else {
       MooeeInternal(in, out, Diagonal, Triangle);
     }
+    if(open_boundaries) ApplyBoundaryMask(out);
   }
 
 
@@ -203,6 +245,7 @@ public:
     } else {
       MooeeInternal(in, out, DiagonalInv, TriangleInv);
     }
+    if(open_boundaries) ApplyBoundaryMask(out);
   }
 
 
@@ -211,7 +254,15 @@ public:
   }
 
 
+  void Mdir(const FermionField& in, FermionField& out, int dir, int disp) override {
+    WilsonBase::Mdir(in, out, dir, disp);
+    if(open_boundaries) ApplyBoundaryMask(out);
+  }
+
+
   void MDeriv(GaugeField& force, const FermionField& X, const FermionField& Y, int dag) override {
+    assert(!open_boundaries); // TODO check for open bc
+
     // NOTE: code copied from original clover term
     conformable(X.Grid(), Y.Grid());
     conformable(X.Grid(), force.Grid());
@@ -603,12 +654,16 @@ public:
     double t4 = usecond();
     ConvertLayout(TmpOriginal, Diagonal, Triangle);
 
-    // Invert the clover term in the improved layout
+    // Possible modify the boundary values
     double t5 = usecond();
+    if(open_boundaries) ModifyBoundaries(Diagonal, Triangle);
+
+    // Invert the clover term in the improved layout
+    double t6 = usecond();
     Invert(Diagonal, Triangle, DiagonalInv, TriangleInv);
 
     // Fill the remaining clover fields
-    double t6 = usecond();
+    double t7 = usecond();
     pickCheckerboard(Even, DiagonalEven,    Diagonal);
     pickCheckerboard(Even, TriangleEven,    Triangle);
     pickCheckerboard(Odd,  DiagonalOdd,     Diagonal);
@@ -619,17 +674,37 @@ public:
     pickCheckerboard(Odd,  TriangleInvOdd,  TriangleInv);
 
     // Report timings
-    double t7 = usecond();
+    double t8 = usecond();
+#if 0
     std::cout << GridLogMessage << "FasterWilsonCloverFermion::ImportGauge timings:"
               << " WilsonFermion::Importgauge = " << (t1 - t0) / 1e6
               << ", allocations = "               << (t2 - t1) / 1e6
               << ", field strength = "            << (t3 - t2) / 1e6
               << ", fill clover = "               << (t4 - t3) / 1e6
               << ", convert = "                   << (t5 - t4) / 1e6
-              << ", inversions = "                << (t6 - t5) / 1e6
-              << ", pick cbs = "                  << (t7 - t6) / 1e6
-              << ", total = "                     << (t7 - t0) / 1e6
+              << ", boundaries = "                << (t6 - t5) / 1e6
+              << ", inversions = "                << (t7 - t6) / 1e6
+              << ", pick cbs = "                  << (t8 - t7) / 1e6
+              << ", total = "                     << (t8 - t0) / 1e6
               << std::endl;
+#endif
+  }
+
+
+  void SetupMasks() {
+    GridBase* grid = BoundaryMask.Grid();
+    int t_dir = Nd-1;
+    Lattice<iScalar<vInteger>> t_coor(grid);
+    LatticeCoordinate(t_coor, t_dir);
+    int T = grid->GlobalDimensions()[t_dir];
+
+    decltype(BoundaryMask) zeroMask(grid); zeroMask = Zero();
+    BoundaryMask = 1.0;
+    BoundaryMask = where(t_coor == 0,   zeroMask, BoundaryMask);
+    BoundaryMask = where(t_coor == T-1, zeroMask, BoundaryMask);
+
+    pickCheckerboard(Even, BoundaryMaskEven, BoundaryMask);
+    pickCheckerboard(Odd,  BoundaryMaskOdd,  BoundaryMask);
   }
 
 
@@ -794,6 +869,86 @@ public:
           }
         }
       }
+    });
+  }
+
+
+  void ModifyBoundaries(CloverDiagonalField& diagonal, CloverTriangleField& triangle) const {
+    // Checks/grid
+    double t0 = usecond();
+    conformable(diagonal, triangle);
+    GridBase* grid = diagonal.Grid();
+
+    // Determine the boundary coordinates/sites
+    double t1 = usecond();
+    int t_dir = Nd - 1;
+    Lattice<iScalar<vInteger>> t_coor(grid);
+    LatticeCoordinate(t_coor, t_dir);
+    int T = grid->GlobalDimensions()[t_dir];
+
+    // Set off-diagonal parts at boundary to zero -- OK
+    double t2 = usecond();
+    CloverTriangleField zeroTriangle(grid);
+    zeroTriangle.Checkerboard() = triangle.Checkerboard();
+    zeroTriangle = Zero();
+    triangle = where(t_coor == 0,   zeroTriangle, triangle);
+    triangle = where(t_coor == T-1, zeroTriangle, triangle);
+
+    // Set diagonal to unity (scaled correctly) -- OK
+    double t3 = usecond();
+    CloverDiagonalField tmp(grid);
+    tmp.Checkerboard() = diagonal.Checkerboard();
+    tmp                = -1.0 * csw_t + this->diag_mass;
+    diagonal           = where(t_coor == 0,   tmp, diagonal);
+    diagonal           = where(t_coor == T-1, tmp, diagonal);
+
+    // Correct values next to boundary
+    double t4 = usecond();
+    if(cF != 1.0) {
+      tmp = cF - 1.0;
+      tmp += diagonal;
+      diagonal = where(t_coor == 1,   tmp, diagonal);
+      diagonal = where(t_coor == T-2, tmp, diagonal);
+    }
+
+    // Report timings
+    double t5 = usecond();
+#if 0
+    std::cout << GridLogMessage << "FasterWilsonCloverFermion::ModifyBoundaries timings:"
+              << " checks = "          << (t1 - t0) / 1e6
+              << ", coordinate = "     << (t2 - t1) / 1e6
+              << ", off-diag zero = "  << (t3 - t2) / 1e6
+              << ", diagonal unity = " << (t4 - t3) / 1e6
+              << ", near-boundary = "  << (t5 - t4) / 1e6
+              << ", total = "          << (t5 - t0) / 1e6
+              << std::endl;
+#endif
+   }
+
+
+  template<class Field>
+  strong_inline void ApplyBoundaryMask(Field& f) const {
+    if(f.Grid()->_isCheckerBoarded) {
+      if(f.Checkerboard() == Odd) {
+        ApplyBoundaryMask(f, BoundaryMaskOdd);
+      } else {
+        ApplyBoundaryMask(f, BoundaryMaskEven);
+      }
+    } else {
+      ApplyBoundaryMask(f, BoundaryMask);
+    }
+  }
+  template<class Field, class Mask>
+  strong_inline void ApplyBoundaryMask(Field& f, const Mask& m) const {
+    conformable(f, m);
+    auto grid  = f.Grid();
+    const int Nsite = grid->oSites();
+    const int Nsimd = grid->Nsimd();
+    autoView(f_v, f, AcceleratorWrite);
+    autoView(m_v, m, AcceleratorRead);
+    // NOTE: this function cannot be 'private' since nvcc forbids this for kernels
+    accelerator_for(ss, Nsite, Nsimd, {
+      coalescedWrite(f_v[ss], m_v(ss) * f_v(ss));
     });
   }
 
@@ -973,6 +1128,44 @@ private:
       return Nred * (Nred - 1) / 2 - (Nred - j) * (Nred - j - 1) / 2 + i - j - 1;
   }
 
+
+#if 0
+  void MooeeNoBc(const FermionField& in, FermionField& out) {
+    if(in.Grid()->_isCheckerBoarded) {
+      if(in.Checkerboard() == Odd) {
+        MooeeInternal(in, out, DiagonalOdd, TriangleOdd);
+      } else {
+        MooeeInternal(in, out, DiagonalEven, TriangleEven);
+      }
+    } else {
+      MooeeInternal(in, out, Diagonal, Triangle);
+    }
+  }
+
+
+  void MooeeNoBcDag(const FermionField& in, FermionField& out) {
+    MooeeNoBc(in, out); // blocks are hermitian
+  }
+
+
+  void MooeeNoBcInv(const FermionField& in, FermionField& out) {
+    if(in.Grid()->_isCheckerBoarded) {
+      if(in.Checkerboard() == Odd) {
+        MooeeInternal(in, out, DiagonalInvOdd, TriangleInvOdd);
+      } else {
+        MooeeInternal(in, out, DiagonalInvEven, TriangleInvEven);
+      }
+    } else {
+      MooeeInternal(in, out, DiagonalInv, TriangleInv);
+    }
+  }
+
+
+  void MooeeNoBcInvDag(const FermionField& in, FermionField& out) {
+    MooeeNoBcInv(in, out); // blocks are hermitian
+  }
+#endif
+
   /////////////////////////////////////////////
   // Member Data
   /////////////////////////////////////////////
@@ -981,6 +1174,9 @@ private:
 
   RealD csw_r;
   RealD csw_t;
+  RealD cF;
+
+  bool open_boundaries;
 
   CloverDiagonalField Diagonal,    DiagonalEven,    DiagonalOdd;
   CloverDiagonalField DiagonalInv, DiagonalInvEven, DiagonalInvOdd;
@@ -989,6 +1185,8 @@ private:
   CloverTriangleField TriangleInv, TriangleInvEven, TriangleInvOdd;
 
   FermionField Tmp;
+
+  MaskField BoundaryMask, BoundaryMaskEven, BoundaryMaskOdd;
 };
 
 NAMESPACE_END(Grid);
