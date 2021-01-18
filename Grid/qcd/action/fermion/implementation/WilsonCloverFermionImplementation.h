@@ -154,6 +154,7 @@ void WilsonCloverFermion<Impl>::ImportGauge(const GaugeField &_Umu)
             << ", misc = "                      << (t5 - t4) / 1e6
             << ", inversions = "                << (t6 - t5) / 1e6
             << ", pick cbs = "                  << (t7 - t6) / 1e6
+            << ", total = "                     << (t7 - t0) / 1e6
             << std::endl;
 }
 
