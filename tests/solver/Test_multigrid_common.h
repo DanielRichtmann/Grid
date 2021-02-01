@@ -121,6 +121,7 @@ struct LevelInfo {
 public:
   std::vector<std::vector<int>> Seeds;
   std::vector<GridCartesian *>  Grids;
+  std::vector<GridRedBlackCartesian *>  RBGrids;
   std::vector<GridParallelRNG>  PRNGs;
 
   LevelInfo(GridCartesian *FineGrid, MultiGridParams const &mgParams) {
@@ -131,6 +132,7 @@ public:
 
     // set up values for finest grid
     Grids.push_back(FineGrid);
+    RBGrids.push_back(SpaceTimeGrid::makeFourDimRedBlackGrid(FineGrid));
     Seeds.push_back({1, 2, 3, 4});
     PRNGs.push_back(GridParallelRNG(Grids.back()));
     PRNGs.back().SeedFixedIntegers(Seeds.back());
@@ -149,6 +151,7 @@ public:
       }
 
       Grids.push_back(SpaceTimeGrid::makeFourDimGrid(tmp, Grids[level - 1]->_simd_layout, GridDefaultMpi()));
+      RBGrids.push_back(SpaceTimeGrid::makeFourDimRedBlackGrid(Grids[level]));
       PRNGs.push_back(GridParallelRNG(Grids[level]));
 
       PRNGs[level].SeedFixedIntegers(Seeds[level]);
@@ -231,7 +234,7 @@ public:
     , _FineMatrix(FineMat)
     , _SmootherMatrix(SmootherMat)
     , _Aggregates(_LevelInfo.Grids[_NextCoarserLevel], _LevelInfo.Grids[_CurrentLevel], 0)
-    , _CoarseMatrix(*_LevelInfo.Grids[_NextCoarserLevel]) {
+    , _CoarseMatrix(*_LevelInfo.Grids[_NextCoarserLevel], *_LevelInfo.RBGrids[_NextCoarserLevel]) {
 
     _NextPreconditionerLevel
       = std::unique_ptr<NextPreconditionerLevel>(new NextPreconditionerLevel(_MultiGridParams, _LevelInfo, _CoarseMatrix, _CoarseMatrix));
