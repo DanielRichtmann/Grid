@@ -29,6 +29,7 @@
 #define GRID_TEST_MULTIGRID_COMMON_H
 
 #include <fstream>
+#include "Aggregation.h"
 
 namespace Grid {
 
@@ -71,33 +72,24 @@ public:
                                   std::vector<int>,              kCycleMaxInnerIter,   // size == nLevels - 1
                                   double,                        coarseSolverTol,
                                   int,                           coarseSolverMaxOuterIter,
-                                  int,                           coarseSolverMaxInnerIter);
+                                  int,                           coarseSolverMaxInnerIter,
+                                  std::vector<SubspaceParams>,   subspace);
 
   // constructor with default values
-  MultiGridParams(int                           _nLevels                  = 2,
-                  std::vector<std::vector<int>> _blockSizes               = {{4, 4, 4, 4}},
-                  std::vector<double>           _smootherTol              = {1e-14},
-                  std::vector<int>              _smootherMaxOuterIter     = {4},
-                  std::vector<int>              _smootherMaxInnerIter     = {4},
-                  bool                          _kCycle                   = true,
-                  std::vector<double>           _kCycleTol                = {1e-1},
-                  std::vector<int>              _kCycleMaxOuterIter       = {2},
-                  std::vector<int>              _kCycleMaxInnerIter       = {5},
-                  double                        _coarseSolverTol          = 5e-2,
-                  int                           _coarseSolverMaxOuterIter = 10,
-                  int                           _coarseSolverMaxInnerIter = 500)
-  : nLevels(_nLevels)
-  , blockSizes(_blockSizes)
-  , smootherTol(_smootherTol)
-  , smootherMaxOuterIter(_smootherMaxOuterIter)
-  , smootherMaxInnerIter(_smootherMaxInnerIter)
-  , kCycle(_kCycle)
-  , kCycleTol(_kCycleTol)
-  , kCycleMaxOuterIter(_kCycleMaxOuterIter)
-  , kCycleMaxInnerIter(_kCycleMaxInnerIter)
-  , coarseSolverTol(_coarseSolverTol)
-  , coarseSolverMaxOuterIter(_coarseSolverMaxOuterIter)
-  , coarseSolverMaxInnerIter(_coarseSolverMaxInnerIter)
+  MultiGridParams()
+    : nLevels(2)
+    , blockSizes({{2,2,2,2}})
+    , smootherTol({1e-14})
+    , smootherMaxOuterIter({4})
+    , smootherMaxInnerIter({4})
+    , kCycle(true)
+    , kCycleTol({1e-1})
+    , kCycleMaxOuterIter({2})
+    , kCycleMaxInnerIter({5})
+    , coarseSolverTol(5e-2)
+    , coarseSolverMaxOuterIter(20)
+    , coarseSolverMaxInnerIter(20)
+    , subspace(1, SubspaceParams())
   {}
 };
 // clang-format on
@@ -250,7 +242,7 @@ public:
     MdagMLinearOperator<FineDiracMatrix, FineVector> fineMdagMOp(_FineMatrix);
 
     _SetupCreateSubspaceTimer.Start();
-    _Aggregates.CreateSubspace(_LevelInfo.PRNGs[_CurrentLevel], fineMdagMOp, nb);
+    CreateSubspace(_LevelInfo.PRNGs[_CurrentLevel], fineMdagMOp, _Aggregates.subspace, _MultiGridParams.subspace[_CurrentLevel]);
     _SetupCreateSubspaceTimer.Stop();
 
     _SetupProjectToChiralitiesTimer.Start();
