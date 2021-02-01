@@ -107,7 +107,7 @@ int main(int argc, char **argv) {
   LevelInfo levelInfo_f(FGrid_f, mgParams);
 
   // Note: We do chiral doubling, so actually only nbasis/2 full basis vectors are used
-  const int nbasis = NBASIS;
+  const int nbasis = 40;
 
   WilsonFermionD Dw_d(Umu_d, *FGrid_d, *FrbGrid_d, mass);
   WilsonFermionF Dw_f(Umu_f, *FGrid_f, *FrbGrid_f, mass);
@@ -121,37 +121,11 @@ int main(int argc, char **argv) {
 
   auto MGPreconDw_f = createMGInstance<vSpinColourVectorF, vTComplexF, nbasis, WilsonFermionF>(mgParams, levelInfo_f, Dw_f, Dw_f);
 
-  if(GridCmdOptionExists(argv, argv + argc, "--readvectors")) {
-    std::string arg = GridCmdOptionPayload(argv, argv + argc, "--writevectors");
-    int nvectors;
-    GridCmdOptionInt(arg, nvectors);
-
-    emptyUserRecord            record;
-    uint32_t                   nersc_csum;
-    uint32_t                   scidac_csuma;
-    uint32_t                   scidac_csumb;
-    typedef SpinColourVectorD  FermionD;
-    typedef vSpinColourVectorD vFermionD;
-
-    BinarySimpleMunger<FermionD, FermionD> munge;
-    std::string                            format = getFormatString<vFermionD>();
-
-    std::vector<LatticeFermionD> basisvecs(nvectors, FGrid_d);
-    for(int n=0; n<basisvecs.size(); ++n) {
-      std::string file1("./vectors." + std::to_string(GridDefaultLatt()[3]) + "x" + std::to_string(GridDefaultLatt()[0]) + "." + std::to_string(n));
-      gaussian(fPRNG, basisvecs[n]);
-      BinaryIO::writeLatticeObject<vFermionD, FermionD>(
-        basisvecs[n], file1, munge, 0, format, nersc_csum, scidac_csuma, scidac_csumb);
-    }
-  }
-
   MGPreconDw_f->setup();
 
   if(GridCmdOptionExists(argv, argv + argc, "--runchecks")) {
     MGPreconDw_f->runChecks(1e-4);
   }
-
-  Grid_finalize();
 
   MixedPrecisionFlexibleGeneralisedMinimalResidual<LatticeFermionD, LatticeFermionF> MPFGMRESPREC(1.0e-12, 50000, FGrid_f, *MGPreconDw_f, 100, false);
 
