@@ -26,81 +26,75 @@
     *************************************************************************************/
 /*  END LEGAL */
 
+#define NBASIS 40
+
 #include <Grid/Grid.h>
 #include <Test_multigrid_common.h>
 #include "../core/FasterWilsonCloverFermion.h"
+#include "../core/Helpers.h"
 
 using namespace std;
 using namespace Grid;
- 
+
+template<class Params, typename std::enable_if<std::is_base_of<Serializable, Params>::value, void>::type* = nullptr>
+void writeParameterFileTemplate(const Params& params, const std::string& option, const std::string& filename) {
+  XmlWriter writer(filename);
+  write(writer, "Params", params);
+  std::cout << GridLogMessage << "Written " << filename << ". Create a proper input file out of this and pass it with " << option << "." << std::endl;
+}
+
 
 int main(int argc, char **argv) {
 
   Grid_init(&argc, &argv);
 
-  // clang-format off
-  GridCartesian         *FGrid_d   = SpaceTimeGrid::makeFourDimGrid(GridDefaultLatt(), GridDefaultSimd(Nd, vComplexD::Nsimd()), GridDefaultMpi());
-  GridCartesian         *FGrid_f   = SpaceTimeGrid::makeFourDimGrid(GridDefaultLatt(), GridDefaultSimd(Nd, vComplexF::Nsimd()), GridDefaultMpi());
-  GridRedBlackCartesian *FrbGrid_d = SpaceTimeGrid::makeFourDimRedBlackGrid(FGrid_d);
-  GridRedBlackCartesian *FrbGrid_f = SpaceTimeGrid::makeFourDimRedBlackGrid(FGrid_f);
-  // clang-format on
+  // write templates for xml input files
+  if(GridCmdOptionExists(argv, argv + argc, "--write-templates")) {
+    writeParameterFileTemplate(MultiGridParams(), "--params-solver", "./params.template.solver.xml");
+    writeParameterFileTemplate(ReadHelpers::ConfigParams(), "--params-config", "./params.template.config.xml");
+  }
 
+  // read in parameters from files
+  MultiGridParams mgParams = CommandlineHelpers::readParameterFile<XmlReader>(&argc, &argv, "--params-solver", MultiGridParams());
+  ReadHelpers::ConfigParams configParams = CommandlineHelpers::readParameterFile<XmlReader>(&argc, &argv, "--params-config", ReadHelpers::ConfigParams());
+
+  // grids
+  GridCartesian* FGrid_d           = ReadHelpers::gridFromFile(configParams.filetype, configParams.config);
+  GridCartesian* FGrid_f           = SpaceTimeGrid::makeFourDimGrid(FGrid_d->_fdimensions, GridDefaultSimd(Nd, vComplexF::Nsimd()), GridDefaultMpi());
+  GridRedBlackCartesian* FrbGrid_d = SpaceTimeGrid::makeFourDimRedBlackGrid(FGrid_d);
+  GridRedBlackCartesian* FrbGrid_f = SpaceTimeGrid::makeFourDimRedBlackGrid(FGrid_f);
+  FGrid_d->show_decomposition(); FrbGrid_d->show_decomposition();
+
+  // rng
   std::vector<int> fSeeds({1, 2, 3, 4});
   GridParallelRNG  fPRNG(FGrid_d);
   fPRNG.SeedFixedIntegers(fSeeds);
 
-  // clang-format off
+  // fields
   LatticeFermionD       src_d(FGrid_d); gaussian(fPRNG, src_d);
   LatticeFermionD resultMGD_d(FGrid_d); resultMGD_d = Zero();
   LatticeFermionD resultMGF_d(FGrid_d); resultMGF_d = Zero();
   LatticeGaugeFieldD    Umu_d(FGrid_d); SU<Nc>::HotConfiguration(fPRNG, Umu_d);
   LatticeGaugeFieldF    Umu_f(FGrid_f); precisionChange(Umu_f, Umu_d);
-  // clang-format on
 
-  RealD mass  = -0.25;
-  RealD csw_r = 1.0;
-  RealD csw_t = 1.0;
+  // read configuration if necessary
+  ReadHelpers::readConfiguration(configParams.filetype, configParams.config, Umu_d);
+  printf("ggg\n"); fflush(stdout);
 
-  MultiGridParams mgParams;
-  std::string     inputXml{"./mg_params.xml"};
-
-  if(GridCmdOptionExists(argv, argv + argc, "--inputxml")) {
-    inputXml = GridCmdOptionPayload(argv, argv + argc, "--inputxml");
-    assert(inputXml.length() != 0);
-  }
-
-  {
-    XmlWriter writer("mg_params_template.xml");
-    write(writer, "Params", mgParams);
-    std::cout << GridLogMessage << "Written mg_params_template.xml" << std::endl;
-
-    XmlReader reader(inputXml);
-    read(reader, "Params", mgParams);
-    std::cout << GridLogMessage << "Read in " << inputXml << std::endl;
-  }
-
-  if(GridCmdOptionExists(argv, argv + argc, "--config")) {
-    std::string config = GridCmdOptionPayload(argv, argv + argc, "--config");
-    assert(config.length() != 0);
-    FieldMetaData header;
-    NerscIO::readConfiguration(Umu_d,header,config);
-  }
-
-  checkParameterValidity(mgParams);
-  std::cout << mgParams << std::endl;
-
+  // level infos
   LevelInfo levelInfo_d(FGrid_d, mgParams);
   LevelInfo levelInfo_f(FGrid_f, mgParams);
 
-  // Note: We do chiral doubling, so actually only nbasis/2 full basis vectors are used
-  const int nbasis = 40;
+  // parameters
+  const int nbasis = NBASIS; assert(nbasis%2 == 0);
+  RealD mass       = MiscHelpers::massFromKappa(configParams.kappa);
+  RealD csw        = configParams.csw;
 
+  // fermion operators
   typedef FasterWilsonCloverFermion<WilsonImplD> FasterWilsonCloverFermionD;
   typedef FasterWilsonCloverFermion<WilsonImplF> FasterWilsonCloverFermionF;
-
-  FasterWilsonCloverFermionD Dwc_d(Umu_d, *FGrid_d, *FrbGrid_d, mass, csw_r, csw_t);
-  FasterWilsonCloverFermionF Dwc_f(Umu_f, *FGrid_f, *FrbGrid_f, mass, csw_r, csw_t);
-
+  FasterWilsonCloverFermionD Dwc_d(Umu_d, *FGrid_d, *FrbGrid_d, mass, csw, csw);
+  FasterWilsonCloverFermionF Dwc_f(Umu_f, *FGrid_f, *FrbGrid_f, mass, csw, csw);
   MdagMLinearOperator<FasterWilsonCloverFermionD, LatticeFermionD> MdagMOpDwc_d(Dwc_d);
   MdagMLinearOperator<FasterWilsonCloverFermionF, LatticeFermionF> MdagMOpDwc_f(Dwc_f);
 
