@@ -32,8 +32,6 @@
 
 namespace Grid {
 
-Zero zero;
-
 // TODO: Can think about having one parameter struct per level and then a
 // vector of these structs. How well would that work together with the
 // serialization strategy of Grid?
@@ -340,7 +338,7 @@ public:
 
     CoarseVector coarseSrc(_LevelInfo.Grids[_NextCoarserLevel]);
     CoarseVector coarseSol(_LevelInfo.Grids[_NextCoarserLevel]);
-    coarseSol = zero;
+    coarseSol = Zero();
 
     FineVector fineTmp(in.Grid());
 
@@ -397,7 +395,7 @@ public:
 
     CoarseVector coarseSrc(_LevelInfo.Grids[_NextCoarserLevel]);
     CoarseVector coarseSol(_LevelInfo.Grids[_NextCoarserLevel]);
-    coarseSol = zero;
+    coarseSol = Zero();
 
     FineVector fineTmp(in.Grid());
 
@@ -470,7 +468,7 @@ public:
     fineMdagMOp.Op(fineTmps[0], fineTmps[1]);     //     M * v
     fineMdagMOp.OpDiag(fineTmps[0], fineTmps[2]); // Mdiag * v
 
-    fineTmps[4] = zero;
+    fineTmps[4] = Zero();
     for(int dir = 0; dir < 4; dir++) { //       Σ_μ Mdir_μ * v
       for(auto disp : {+1, -1}) {
         fineMdagMOp.OpDir(fineTmps[0], fineTmps[3], dir, disp);
