@@ -28,6 +28,7 @@
 
 #include <Grid/Grid.h>
 #include <Test_multigrid_common.h>
+#include "../core/FasterWilsonCloverFermion.h"
 
 using namespace std;
 using namespace Grid;
@@ -94,17 +95,20 @@ int main(int argc, char **argv) {
   // Note: We do chiral doubling, so actually only nbasis/2 full basis vectors are used
   const int nbasis = 40;
 
-  WilsonCloverFermionD Dwc_d(Umu_d, *FGrid_d, *FrbGrid_d, mass, csw_r, csw_t);
-  WilsonCloverFermionF Dwc_f(Umu_f, *FGrid_f, *FrbGrid_f, mass, csw_r, csw_t);
+  typedef FasterWilsonCloverFermion<WilsonImplD> FasterWilsonCloverFermionD;
+  typedef FasterWilsonCloverFermion<WilsonImplF> FasterWilsonCloverFermionF;
 
-  MdagMLinearOperator<WilsonCloverFermionD, LatticeFermionD> MdagMOpDwc_d(Dwc_d);
-  MdagMLinearOperator<WilsonCloverFermionF, LatticeFermionF> MdagMOpDwc_f(Dwc_f);
+  FasterWilsonCloverFermionD Dwc_d(Umu_d, *FGrid_d, *FrbGrid_d, mass, csw_r, csw_t);
+  FasterWilsonCloverFermionF Dwc_f(Umu_f, *FGrid_f, *FrbGrid_f, mass, csw_r, csw_t);
+
+  MdagMLinearOperator<FasterWilsonCloverFermionD, LatticeFermionD> MdagMOpDwc_d(Dwc_d);
+  MdagMLinearOperator<FasterWilsonCloverFermionF, LatticeFermionF> MdagMOpDwc_f(Dwc_f);
 
   std::cout << GridLogMessage << "**************************************************" << std::endl;
   std::cout << GridLogMessage << "Testing single-precision Multigrid for Wilson Clover" << std::endl;
   std::cout << GridLogMessage << "**************************************************" << std::endl;
 
-  auto MGPreconDwc_f = createMGInstance<vSpinColourVectorF, vTComplexF, nbasis, WilsonCloverFermionF>(mgParams, levelInfo_f, Dwc_f, Dwc_f);
+  auto MGPreconDwc_f = createMGInstance<vSpinColourVectorF, vTComplexF, nbasis, FasterWilsonCloverFermionF>(mgParams, levelInfo_f, Dwc_f, Dwc_f);
 
   MGPreconDwc_f->setup();
 
@@ -126,7 +130,7 @@ int main(int argc, char **argv) {
     std::cout << GridLogMessage << "Testing double-precision Multigrid for Wilson Clover" << std::endl;
     std::cout << GridLogMessage << "**************************************************" << std::endl;
 
-    auto MGPreconDwc_d = createMGInstance<vSpinColourVectorD, vTComplexD, nbasis, WilsonCloverFermionD>(mgParams, levelInfo_d, Dwc_d, Dwc_d);
+    auto MGPreconDwc_d = createMGInstance<vSpinColourVectorD, vTComplexD, nbasis, FasterWilsonCloverFermionD>(mgParams, levelInfo_d, Dwc_d, Dwc_d);
 
     MGPreconDwc_d->setup();
 
