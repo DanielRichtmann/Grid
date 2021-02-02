@@ -87,8 +87,6 @@ public:
                                   int,                           coarseSolverRestartLength,
                                   std::string,                   coarseSolverAlgorithm,
                                   int,                           coarseSolverUseRB);
-
-  // constructor with default values
   MultiGridParams()
     : nLevels(2)
     , blockSizes({{2,2,2,2}})

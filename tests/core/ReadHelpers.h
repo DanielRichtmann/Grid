@@ -31,6 +31,30 @@
 NAMESPACE_BEGIN(Grid);
 NAMESPACE_BEGIN(ReadHelpers);
 
+struct ConfigParams : Serializable {
+  GRID_SERIALIZABLE_CLASS_MEMBERS(ConfigParams,
+                                  RealD, kappa,
+                                  RealD, csw,
+                                  std::string, config,
+                                  std::string, filetype,
+                                  std::vector<RealD>, boundary_phases);
+  ConfigParams()
+    : kappa(0.1)
+    , csw(1.0)
+    , config("./dummy_path")
+    , filetype("random")
+    , boundary_phases({1.0, 1.0, 1.0, -1.0})
+  {}
+};
+
+
+void checkParameterValidity(ConfigParams const &params) {
+  assert(params.kappa > 0.0);
+  assert(params.csw >= 0.0);
+  assert(MiscHelpers::element_of(params.filetype, {"random", "nersc", "openqcd"}));
+}
+
+
 void readLattSize(const std::string& filetype, const std::string& config, Coordinate& fdimensions) {
   assert(config.length() != 0);
   assert(Nd == 4);
@@ -80,40 +104,10 @@ GridCartesian* gridFromFile(const std::string& filetype, const std::string& conf
 }
 
 
-bool gridsCompatible(GridBase* foo, GridBase* bar) {
-  assert(Nd == 4);
-  bool ret = true;
-
-  ret = ret && foo->_fdimensions[0] == bar->_fdimensions[0];
-  ret = ret && foo->_fdimensions[1] == bar->_fdimensions[1];
-  ret = ret && foo->_fdimensions[2] == bar->_fdimensions[2];
-  ret = ret && foo->_fdimensions[3] == bar->_fdimensions[3];
-
-  ret = ret && foo->_gdimensions[0] == bar->_gdimensions[0];
-  ret = ret && foo->_gdimensions[1] == bar->_gdimensions[1];
-  ret = ret && foo->_gdimensions[2] == bar->_gdimensions[2];
-  ret = ret && foo->_gdimensions[3] == bar->_gdimensions[3];
-
-  ret = ret && foo->_ldimensions[0] == bar->_ldimensions[0];
-  ret = ret && foo->_ldimensions[1] == bar->_ldimensions[1];
-  ret = ret && foo->_ldimensions[2] == bar->_ldimensions[2];
-  ret = ret && foo->_ldimensions[3] == bar->_ldimensions[3];
-
-  ret = ret && foo->_rdimensions[0] == bar->_rdimensions[0];
-  ret = ret && foo->_rdimensions[1] == bar->_rdimensions[1];
-  ret = ret && foo->_rdimensions[2] == bar->_rdimensions[2];
-  ret = ret && foo->_rdimensions[3] == bar->_rdimensions[3];
-
-  ret = ret && foo->_isCheckerBoarded == bar->_isCheckerBoarded;
-
-  return ret;
-}
-
-
 void readConfiguration(const std::string& filetype, const std::string& config, LatticeGaugeFieldD& Umu) {
   GridCartesian* grid = gridFromFile(filetype, config);
   // NOTE: cannot do conformable since this requires pointer is same
-  assert(gridsCompatible(grid, Umu.Grid()));
+  assert(MiscHelpers::gridsCompatible(grid, Umu.Grid()));
   FieldMetaData header;
   if(filetype == "nersc") {
     NerscIO::readConfiguration(Umu, header, config);
@@ -123,36 +117,6 @@ void readConfiguration(const std::string& filetype, const std::string& config, L
     std::cout << GridLogMessage << "Did not read anything because filetype is " << filetype << std::endl;
   }
 }
-
-
-struct ConfigParams : Serializable {
-  GRID_SERIALIZABLE_CLASS_MEMBERS(ConfigParams,
-                                  RealD, kappa,
-                                  RealD, csw,
-                                  std::string, config,
-                                  std::string, filetype,
-                                  std::vector<RealD>, boundary_phases);
-  // constructor with default values
-  ConfigParams(RealD              _kappa           = 0.1,
-               RealD              _csw             = 1.0,
-               std::string        _config          = "./dummy_path",
-               std::string        _filetype        = "random",
-               std::vector<RealD> _boundary_phases = {1.0, 1.0, 1.0, -1.0})
-    : kappa(_kappa)
-    , csw(_csw)
-    , config(_config)
-    , filetype(_filetype)
-    , boundary_phases(_boundary_phases)
-  {}
-};
-
-
-void checkParameterValidity(ConfigParams const &params) {
-  assert(params.kappa > 0.0);
-  assert(params.csw >= 0.0);
-  assert(MiscHelpers::element_of(params.filetype, {"random", "nersc", "openqcd"}));
-}
-
 
 NAMESPACE_END(ReadHelpers);
 NAMESPACE_END(Grid);

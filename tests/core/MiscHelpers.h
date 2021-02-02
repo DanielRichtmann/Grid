@@ -40,5 +40,35 @@ bool element_of(const T& needle, const std::vector<T>& haystack) {
 RealD kappaFromMass(RealD mass)  { return 0.5 / (Nd + mass); }
 RealD massFromKappa(RealD kappa) { return 1. / (2. * kappa) - Nd; }
 
+
+bool gridsCompatible(GridBase* foo, GridBase* bar) {
+  assert(Nd == 4);
+  bool ret = true;
+
+  ret = ret && foo->_fdimensions[0] == bar->_fdimensions[0];
+  ret = ret && foo->_fdimensions[1] == bar->_fdimensions[1];
+  ret = ret && foo->_fdimensions[2] == bar->_fdimensions[2];
+  ret = ret && foo->_fdimensions[3] == bar->_fdimensions[3];
+
+  ret = ret && foo->_gdimensions[0] == bar->_gdimensions[0];
+  ret = ret && foo->_gdimensions[1] == bar->_gdimensions[1];
+  ret = ret && foo->_gdimensions[2] == bar->_gdimensions[2];
+  ret = ret && foo->_gdimensions[3] == bar->_gdimensions[3];
+
+  ret = ret && foo->_ldimensions[0] == bar->_ldimensions[0];
+  ret = ret && foo->_ldimensions[1] == bar->_ldimensions[1];
+  ret = ret && foo->_ldimensions[2] == bar->_ldimensions[2];
+  ret = ret && foo->_ldimensions[3] == bar->_ldimensions[3];
+
+  ret = ret && foo->_rdimensions[0] == bar->_rdimensions[0];
+  ret = ret && foo->_rdimensions[1] == bar->_rdimensions[1];
+  ret = ret && foo->_rdimensions[2] == bar->_rdimensions[2];
+  ret = ret && foo->_rdimensions[3] == bar->_rdimensions[3];
+
+  ret = ret && foo->_isCheckerBoarded == bar->_isCheckerBoarded;
+
+  return ret;
+}
+
 NAMESPACE_END(MiscHelpers);
 NAMESPACE_END(Grid);
