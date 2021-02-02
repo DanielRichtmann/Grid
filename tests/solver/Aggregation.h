@@ -29,6 +29,7 @@
 #pragma once
 
 #include "../core/MiscHelpers.h"
+#include "../core/SolverHelpers.h"
 
 NAMESPACE_BEGIN(Grid);
 
@@ -37,37 +38,26 @@ struct SubspaceParams : Serializable {
                                   int,         npreortho,
                                   int,         npostortho,
                                   std::string, vectorType,
-                                  bool,        solverUseEo,
                                   double,      solverTol,
                                   int,         solverMaxIter,
                                   int,         solverRestartLength,
-                                  std::string, solverName);
-  // constructor with default values
-  SubspaceParams()
-    : npreortho(0)
-    , npostortho(1)
-    , vectorType("test")
-    , solverUseEo(true)
-    , solverTol(1e-6)
-    , solverMaxIter(1000)
-    , solverRestartLength(20)
-    , solverName("cg")
-  {}
+                                  std::string, solverAlgorithm,
+                                  int,         solverUseRB);
 };
 
 
 void checkParameterValidity(const SubspaceParams& params) {
   assert(MiscHelpers::element_of(params.vectorType, {"null", "test"}));
-  assert(MiscHelpers::element_of(params.solverName, {"cg", "gmres", "bicgstab"}));
+  assert(MiscHelpers::element_of(params.solverAlgorithm, {"cg", "gmres", "bicgstab"}));
 }
 
 
-template<class Field>
-void CreateSubspace(GridParallelRNG&           rng,
-                    LinearOperatorBase<Field>& hermop,
-                    std::vector<Field>&        basis,
-                    const SubspaceParams&      params) {
-  CreateSubspaceSimple(rng, hermop, basis, params);
+template<class Matrix, class Field>
+void CreateSubspace(GridParallelRNG&      rng,
+                    Matrix&               mat,
+                    std::vector<Field>&   basis,
+                    const SubspaceParams& params) {
+  CreateSubspaceSimple(rng, mat, basis, params);
 }
 
 
@@ -93,11 +83,11 @@ void orthonormalize(std::vector<Field>& basis, int n) {
 }
 
 
-template<class Field>
-void CreateSubspaceSimple(GridParallelRNG&           rng,
-                          LinearOperatorBase<Field>& op,
-                          std::vector<Field>&        basis,
-                          const SubspaceParams&      params) {
+template<class Matrix, class Field>
+void CreateSubspaceSimple(GridParallelRNG&      rng,
+                          Matrix&               mat,
+                          std::vector<Field>&   basis,
+                          const SubspaceParams& params) {
   assert(basis.size() % 2 == 0);
   int nbasis = basis.size();
   int nb     = nbasis / 2;
@@ -113,7 +103,12 @@ void CreateSubspaceSimple(GridParallelRNG&           rng,
   std::cout << GridLogMessage << "Done pre-orthonormalizing basis vectors" << std::endl;
 
   // determine solver
-  GeneralisedMinimalResidual<Field> solver(params.solverTol, params.solverMaxIter, params.solverRestartLength, false);
+  SolverHelpers::NonHermitianSolverChoice<Matrix, Field> solver(mat,
+                                                                params.solverTol,
+                                                                params.solverMaxIter,
+                                                                params.solverRestartLength,
+                                                                params.solverUseRB,
+                                                                params.solverAlgorithm);
   std::cout << GridLogMessage << "Done setting up solver" << std::endl;
 
   // find near-null vectors
@@ -129,7 +124,7 @@ void CreateSubspaceSimple(GridParallelRNG&           rng,
     } else {
       assert(0 && "Wrong vector type");
     }
-    solver(op, src, psi);
+    solver(src, psi);
     v = psi;
     std::cout << GridLogMessage << "Done finding near-null vector " << b << std::endl;
   }

@@ -64,27 +64,42 @@ struct MultiGridParams : Serializable {
 public:
   GRID_SERIALIZABLE_CLASS_MEMBERS(MultiGridParams,
                                   int,                           nLevels,
-                                  std::vector<std::vector<int>>, blockSizes,            // size == nLevels - 1
-                                  std::vector<double>,           smootherTol,           // size == nLevels - 1
-                                  std::vector<int>,              smootherMaxIter,       // size == nLevels - 1
-                                  std::vector<int>,              smootherRestartLength, // size == nLevels - 1
-                                  std::vector<std::string>,      smootherAlgorithm,     // size == nLevels - 1
-                                  std::vector<int>,              smootherUseRB,         // size == nLevels - 1
+                                  std::vector<std::vector<int>>, blockSizes,               // size == nLevels - 1
+                                  std::vector<int>,              setupNpreOrtho,           // size == nLevels - 1
+                                  std::vector<int>,              setupNpostOrtho,          // size == nLevels - 1
+                                  std::vector<std::string>,      setupVectorType,          // size == nLevels - 1
+                                  std::vector<double>,           setupSolverTol,           // size == nLevels - 1
+                                  std::vector<int>,              setupSolverMaxIter,       // size == nLevels - 1
+                                  std::vector<int>,              setupSolverRestartLength, // size == nLevels - 1
+                                  std::vector<std::string>,      setupSolverAlgorithm,     // size == nLevels - 1
+                                  std::vector<int>,              setupSolverUseRB,         // size == nLevels - 1
+                                  std::vector<double>,           smootherTol,              // size == nLevels - 1
+                                  std::vector<int>,              smootherMaxIter,          // size == nLevels - 1
+                                  std::vector<int>,              smootherRestartLength,    // size == nLevels - 1
+                                  std::vector<std::string>,      smootherAlgorithm,        // size == nLevels - 1
+                                  std::vector<int>,              smootherUseRB,            // size == nLevels - 1
                                   int,                           kCycle,
-                                  std::vector<double>,           kCycleTol,             // size == nLevels - 1
-                                  std::vector<int>,              kCycleMaxIter,         // size == nLevels - 1
-                                  std::vector<int>,              kCycleRestartLength,   // size == nLevels - 1
-                                  double,                        coarseSolverTol,       // size == nLevels - 1
+                                  std::vector<double>,           kCycleTol,                // size == nLevels - 1
+                                  std::vector<int>,              kCycleMaxIter,            // size == nLevels - 1
+                                  std::vector<int>,              kCycleRestartLength,      // size == nLevels - 1
+                                  double,                        coarseSolverTol,          // size == nLevels - 1
                                   int,                           coarseSolverMaxIter,
                                   int,                           coarseSolverRestartLength,
                                   std::string,                   coarseSolverAlgorithm,
-                                  int,                           coarseSolverUseRB,
-                                  std::vector<SubspaceParams>,   subspace);
+                                  int,                           coarseSolverUseRB);
 
   // constructor with default values
   MultiGridParams()
     : nLevels(2)
     , blockSizes({{2,2,2,2}})
+    , setupNpreOrtho({0})
+    , setupNpostOrtho({1})
+    , setupVectorType({"test"})
+    , setupSolverTol({1e-6})
+    , setupSolverMaxIter({1000})
+    , setupSolverRestartLength({20})
+    , setupSolverAlgorithm({"bicgstab"})
+    , setupSolverUseRB({1})
     , smootherTol({1e-14})
     , smootherMaxIter({16})
     , smootherRestartLength({4})
@@ -99,9 +114,23 @@ public:
     , coarseSolverRestartLength(20)
     , coarseSolverAlgorithm("gmres")
     , coarseSolverUseRB(1)
-    , subspace(1, SubspaceParams())
   {}
 };
+
+std::vector<SubspaceParams> convert(const MultiGridParams& mg) {
+  int nSetupLevels = mg.nLevels-1;
+  std::vector<SubspaceParams> ret(nSetupLevels);
+
+  for(int lvl=0; lvl<nSetupLevels; lvl++) { ret[lvl].npreortho           = mg.setupNpreOrtho[lvl]; }
+  for(int lvl=0; lvl<nSetupLevels; lvl++) { ret[lvl].npostortho          = mg.setupNpostOrtho[lvl]; }
+  for(int lvl=0; lvl<nSetupLevels; lvl++) { ret[lvl].vectorType          = mg.setupVectorType[lvl]; }
+  for(int lvl=0; lvl<nSetupLevels; lvl++) { ret[lvl].solverTol           = mg.setupSolverTol[lvl]; }
+  for(int lvl=0; lvl<nSetupLevels; lvl++) { ret[lvl].solverMaxIter       = mg.setupSolverMaxIter[lvl]; }
+  for(int lvl=0; lvl<nSetupLevels; lvl++) { ret[lvl].solverRestartLength = mg.setupSolverRestartLength[lvl]; }
+  for(int lvl=0; lvl<nSetupLevels; lvl++) { ret[lvl].solverAlgorithm     = mg.setupSolverAlgorithm[lvl]; }
+  for(int lvl=0; lvl<nSetupLevels; lvl++) { ret[lvl].solverUseRB         = mg.setupSolverUseRB[lvl]; }
+  return ret;
+}
 // clang-format on
 
 void checkParameterValidity(MultiGridParams const &params) {
@@ -271,7 +300,8 @@ public:
     int nb = nBasis / 2;
 
     _SetupCreateSubspaceTimer.Start();
-    CreateSubspace(_LevelInfo.PRNGs[_CurrentLevel], _FineOperator, _Aggregates.subspace, _MultiGridParams.subspace[_CurrentLevel]);
+    auto subspaceParams = convert(_MultiGridParams);
+    CreateSubspace(_LevelInfo.PRNGs[_CurrentLevel], _FineMatrix, _Aggregates.subspace, subspaceParams[_CurrentLevel]);
     _SetupCreateSubspaceTimer.Stop();
 
     _SetupProjectToChiralitiesTimer.Start();
