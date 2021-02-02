@@ -32,4 +32,5 @@
 #include "MiscHelpers.h"
 #include "ReadHelpers.h"
 #include "CommandlineHelpers.h"
+#include "SourceHelpers.h"
 #include "SolverHelpers.h"

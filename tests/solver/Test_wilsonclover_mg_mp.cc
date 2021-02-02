@@ -52,11 +52,13 @@ int main(int argc, char **argv) {
   if(GridCmdOptionExists(argv, argv + argc, "--write-templates")) {
     writeParameterFileTemplate(MultiGridParams(), "--params-solver", "./params.template.solver.xml");
     writeParameterFileTemplate(ReadHelpers::ConfigParams(), "--params-config", "./params.template.config.xml");
+    writeParameterFileTemplate(SourceHelpers::SourceParams(), "--params-source", "./params.template.source.xml");
   }
 
   // read in parameters from files
   MultiGridParams mgParams = CommandlineHelpers::readParameterFile<XmlReader>(&argc, &argv, "--params-solver", MultiGridParams());
   ReadHelpers::ConfigParams configParams = CommandlineHelpers::readParameterFile<XmlReader>(&argc, &argv, "--params-config", ReadHelpers::ConfigParams());
+  SourceHelpers::SourceParams sourceParams = CommandlineHelpers::readParameterFile<XmlReader>(&argc, &argv, "--params-source", SourceHelpers::SourceParams());
 
   // grids
   GridCartesian* FGrid_d           = ReadHelpers::gridFromFile(configParams.filetype, configParams.config);
@@ -71,7 +73,7 @@ int main(int argc, char **argv) {
   fPRNG.SeedFixedIntegers(fSeeds);
 
   // fields
-  LatticeFermionD       src_d(FGrid_d); gaussian(fPRNG, src_d);
+  LatticeFermionD       src_d(FGrid_d); SourceHelpers::createSource(fPRNG, sourceParams, src_d);
   LatticeFermionD resultMGD_d(FGrid_d); resultMGD_d = Zero();
   LatticeFermionD resultMGF_d(FGrid_d); resultMGF_d = Zero();
   LatticeGaugeFieldD    Umu_d(FGrid_d); SU<Nc>::HotConfiguration(fPRNG, Umu_d);
@@ -79,7 +81,6 @@ int main(int argc, char **argv) {
 
   // read configuration if necessary
   ReadHelpers::readConfiguration(configParams.filetype, configParams.config, Umu_d);
-  printf("ggg\n"); fflush(stdout);
 
   // level infos
   LevelInfo levelInfo_d(FGrid_d, mgParams);
