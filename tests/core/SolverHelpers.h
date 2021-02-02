@@ -34,52 +34,58 @@ NAMESPACE_BEGIN(Grid);
 NAMESPACE_BEGIN(SolverHelpers);
 
 template<class Matrix, class Field>
-class SolverChoice : public LinearFunction<Field> {
+class NonHermitianSolverChoice : public LinearFunction<Field> {
 private:
-  std::unique_ptr<OperatorFunction<Field>> slv;
+  NonHermitianLinearOperator<Matrix, Field> op;
+  std::unique_ptr<OperatorFunction<Field>>  slv;
 
 public:
-  Matrix& mat;
-  RealD tolerance;
-  int maxIter;
-  int restartLength;
+  Matrix&     mat;
+  RealD       tolerance;
+  int         maxIter;
+  int         restartLength;
+  bool        useRB;
   std::string type;
-  // LinearFunction<Field>& prec;
 
-
-  SolverChoice(Matrix&                _mat,
-               RealD                  _tolerance,
-               int                    _maxIter,
-               int                    _restartLength,
-               std::string            _type)
-               // LinearFunction<Field>& _prec = TrivialPrecon<Field>())
+  NonHermitianSolverChoice(Matrix&     _mat,
+                           RealD       _tolerance,
+                           int         _maxIter,
+                           int         _restartLength,
+                           bool        _useRB,
+                           std::string _type)
     : mat(_mat)
+    , op(_mat)
     , tolerance(_tolerance)
     , maxIter(_maxIter)
     , restartLength(_restartLength)
-    , type(_type)
-    // , prec(_prec)
-  {
+    , useRB(_useRB)
+    , type(_type) {
     assert(MiscHelpers::element_of(type, {"mr", "gmres", "bicgstab"}));
     if(type == "mr") {
-      slv = std::unique_ptr<OperatorFunction<Field>>(
-        new MinimalResidual<Field>(tolerance, maxIter, 1.0, false));
+      slv =
+        std::unique_ptr<OperatorFunction<Field>>(new MinimalResidual<Field>(tolerance, maxIter, 1.0, false));
     } else if(type == "gmres") {
       slv = std::unique_ptr<OperatorFunction<Field>>(
         new GeneralisedMinimalResidual<Field>(tolerance, maxIter, restartLength, false));
-    // } else if(type == "fgmres") {
-    //   slv = std::unique_ptr<OperatorFunction<Field>>(new FlexibleGeneralisedMinimalResidual<Field>(
-    //     tolerance, maxIter, prec, restartLength, false));
+      // } else if(type == "fgmres") {
+      //   slv = std::unique_ptr<OperatorFunction<Field>>(new FlexibleGeneralisedMinimalResidual<Field>(
+      //     tolerance, maxIter, prec, restartLength, false));
     } else if(type == "bicgstab") {
-      slv = std::unique_ptr<OperatorFunction<Field>>(
-        new BiCGSTAB<Field>(tolerance, maxIter, false));
+      slv = std::unique_ptr<OperatorFunction<Field>>(new BiCGSTAB<Field>(tolerance, maxIter, false));
     }
   }
 
   void operator()(const Field& in, Field& out) {
-    std::cout << "SolverChoice: " << norm2(in) << " " << norm2(out) << std::endl;
-    (*slv)(mat, in, out);
-    std::cout << "SolverChoice: " << norm2(in) << " " << norm2(out) << std::endl;
+    if(useRB) {
+      std::cout << "NonHermitianSolverChoice begin   RB: " << norm2(in) << " " << norm2(out) << std::endl;
+      NonHermitianSchurRedBlackDiagMooeeSolve<Field> slv_rb(*slv, false, true);
+      slv_rb(mat, in, out);
+      std::cout << "NonHermitianSolverChoice end     RB: " << norm2(in) << " " << norm2(out) << std::endl;
+    } else {
+      std::cout << "NonHermitianSolverChoice begin NORB: " << norm2(in) << " " << norm2(out) << std::endl;
+      (*slv)(op, in, out);
+      std::cout << "NonHermitianSolverChoice end   NORB: " << norm2(in) << " " << norm2(out) << std::endl;
+    }
   }
 };
 

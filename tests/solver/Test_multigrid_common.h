@@ -30,6 +30,7 @@
 
 #include <fstream>
 #include "Aggregation.h"
+#include "../core/MiscHelpers.h"
 #include "../core/SolverHelpers.h"
 
 namespace Grid {
@@ -68,7 +69,8 @@ public:
                                   std::vector<int>,              smootherMaxIter,       // size == nLevels - 1
                                   std::vector<int>,              smootherRestartLength, // size == nLevels - 1
                                   std::vector<std::string>,      smootherAlgorithm,     // size == nLevels - 1
-                                  bool,                          kCycle,
+                                  std::vector<int>,              smootherUseRB,         // size == nLevels - 1
+                                  int,                           kCycle,
                                   std::vector<double>,           kCycleTol,             // size == nLevels - 1
                                   std::vector<int>,              kCycleMaxIter,         // size == nLevels - 1
                                   std::vector<int>,              kCycleRestartLength,   // size == nLevels - 1
@@ -76,6 +78,7 @@ public:
                                   int,                           coarseSolverMaxIter,
                                   int,                           coarseSolverRestartLength,
                                   std::string,                   coarseSolverAlgorithm,
+                                  int,                           coarseSolverUseRB,
                                   std::vector<SubspaceParams>,   subspace);
 
   // constructor with default values
@@ -86,7 +89,8 @@ public:
     , smootherMaxIter({16})
     , smootherRestartLength({4})
     , smootherAlgorithm({"gmres"})
-    , kCycle(true)
+    , smootherUseRB({1}) // need int because of vector<bool> serialization problem
+    , kCycle(1)
     , kCycleTol({1e-1})
     , kCycleMaxIter({10})
     , kCycleRestartLength({5})
@@ -94,6 +98,7 @@ public:
     , coarseSolverMaxIter(400)
     , coarseSolverRestartLength(20)
     , coarseSolverAlgorithm("gmres")
+    , coarseSolverUseRB(1)
     , subspace(1, SubspaceParams())
   {}
 };
@@ -108,9 +113,14 @@ void checkParameterValidity(MultiGridParams const &params) {
   assert(correctSize == params.smootherMaxIter.size());
   assert(correctSize == params.smootherRestartLength.size());
   assert(correctSize == params.smootherAlgorithm.size());
+  assert(correctSize == params.smootherUseRB.size());
   assert(correctSize == params.kCycleTol.size());
   assert(correctSize == params.kCycleMaxIter.size());
   assert(correctSize == params.kCycleRestartLength.size());
+
+  assert(MiscHelpers::element_of(params.kCycle, {0, 1}));
+  assert(MiscHelpers::element_of(params.coarseSolverUseRB, {0, 1}));
+  for(const auto& elem : params.smootherUseRB) assert(MiscHelpers::element_of(elem, {0, 1}));
 }
 
 struct LevelInfo {
@@ -189,7 +199,7 @@ public:
   typedef Matrix                                                                                                      FineDiracMatrix;
   typedef typename Aggregates::FineField                                                                              FineVector;
   typedef NonHermitianLinearOperator<FineDiracMatrix,FineVector>                                                      FineOperator;
-  typedef SolverHelpers::SolverChoice<FineOperator,FineVector>                                                        FineSmoother;
+  typedef SolverHelpers::NonHermitianSolverChoice<FineDiracMatrix,FineVector>                                         FineSmoother;
   typedef MultiGridPreconditioner<CoarseSiteVector, iScalar<CComplex>, nBasis, nCoarserLevels - 1, CoarseDiracMatrix> NextPreconditionerLevel;
   // clang-format on
 
@@ -242,7 +252,7 @@ public:
     , _SmootherMatrix(SmootherMat)
     , _FineOperator(FineMat)
     , _SmootherOperator(SmootherMat)
-    , _SmootherSolver(_SmootherOperator, mgParams.smootherTol[_CurrentLevel], mgParams.smootherMaxIter[_CurrentLevel], mgParams.smootherRestartLength[_CurrentLevel], mgParams.smootherAlgorithm[_CurrentLevel])
+    , _SmootherSolver(_SmootherMatrix, mgParams.smootherTol[_CurrentLevel], mgParams.smootherMaxIter[_CurrentLevel], mgParams.smootherRestartLength[_CurrentLevel], mgParams.smootherUseRB[_CurrentLevel], mgParams.smootherAlgorithm[_CurrentLevel])
     , _Aggregates(_LevelInfo.Grids[_NextCoarserLevel], _LevelInfo.Grids[_CurrentLevel], 0)
     , _CoarseMatrix(*_LevelInfo.Grids[_NextCoarserLevel], *_LevelInfo.RBGrids[_NextCoarserLevel])
     , _CoarseOperator(_CoarseMatrix) {
@@ -620,10 +630,10 @@ public:
   // Type Definitions
   /////////////////////////////////////////////
 
-  typedef Matrix                                                 FineDiracMatrix;
-  typedef Lattice<Fobj>                                          FineVector;
-  typedef NonHermitianLinearOperator<FineDiracMatrix,FineVector> FineOperator;
-  typedef SolverHelpers::SolverChoice<FineOperator,FineVector>   FineSolver;
+  typedef Matrix                                                              FineDiracMatrix;
+  typedef Lattice<Fobj>                                                       FineVector;
+  typedef NonHermitianLinearOperator<FineDiracMatrix,FineVector>              FineOperator;
+  typedef SolverHelpers::NonHermitianSolverChoice<FineDiracMatrix,FineVector> FineSolver;
 
   /////////////////////////////////////////////
   // Member Data
@@ -631,11 +641,11 @@ public:
 
   int _CurrentLevel;
 
-  MultiGridParams &_MultiGridParams;
-  LevelInfo &      _LevelInfo;
+  MultiGridParams& _MultiGridParams;
+  LevelInfo&       _LevelInfo;
 
-  FineDiracMatrix &_FineMatrix;
-  FineDiracMatrix &_SmootherMatrix;
+  FineDiracMatrix& _FineMatrix;
+  FineDiracMatrix& _SmootherMatrix;
 
   FineOperator _FineOperator;
   FineOperator _SmootherOperator;
@@ -657,7 +667,7 @@ public:
     , _SmootherMatrix(SmootherMat)
     , _FineOperator(FineMat)
     , _SmootherOperator(SmootherMat)
-    , _FineSolver(_SmootherOperator, mgParams.coarseSolverTol, mgParams.coarseSolverMaxIter, mgParams.coarseSolverRestartLength, mgParams.coarseSolverAlgorithm)
+    , _FineSolver(_SmootherMatrix, mgParams.coarseSolverTol, mgParams.coarseSolverMaxIter, mgParams.coarseSolverRestartLength, mgParams.coarseSolverUseRB, mgParams.coarseSolverAlgorithm)
   {
 
     resetTimers();
