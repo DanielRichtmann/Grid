@@ -30,6 +30,7 @@
 
 #include <fstream>
 #include "Aggregation.h"
+#include "../core/SolverHelpers.h"
 
 namespace Grid {
 
@@ -62,17 +63,19 @@ struct MultiGridParams : Serializable {
 public:
   GRID_SERIALIZABLE_CLASS_MEMBERS(MultiGridParams,
                                   int,                           nLevels,
-                                  std::vector<std::vector<int>>, blockSizes,           // size == nLevels - 1
-                                  std::vector<double>,           smootherTol,          // size == nLevels - 1
-                                  std::vector<int>,              smootherMaxOuterIter, // size == nLevels - 1
-                                  std::vector<int>,              smootherMaxInnerIter, // size == nLevels - 1
+                                  std::vector<std::vector<int>>, blockSizes,            // size == nLevels - 1
+                                  std::vector<double>,           smootherTol,           // size == nLevels - 1
+                                  std::vector<int>,              smootherMaxIter,       // size == nLevels - 1
+                                  std::vector<int>,              smootherRestartLength, // size == nLevels - 1
+                                  std::vector<std::string>,      smootherAlgorithm,     // size == nLevels - 1
                                   bool,                          kCycle,
-                                  std::vector<double>,           kCycleTol,            // size == nLevels - 1
-                                  std::vector<int>,              kCycleMaxOuterIter,   // size == nLevels - 1
-                                  std::vector<int>,              kCycleMaxInnerIter,   // size == nLevels - 1
-                                  double,                        coarseSolverTol,
-                                  int,                           coarseSolverMaxOuterIter,
-                                  int,                           coarseSolverMaxInnerIter,
+                                  std::vector<double>,           kCycleTol,             // size == nLevels - 1
+                                  std::vector<int>,              kCycleMaxIter,         // size == nLevels - 1
+                                  std::vector<int>,              kCycleRestartLength,   // size == nLevels - 1
+                                  double,                        coarseSolverTol,       // size == nLevels - 1
+                                  int,                           coarseSolverMaxIter,
+                                  int,                           coarseSolverRestartLength,
+                                  std::string,                   coarseSolverAlgorithm,
                                   std::vector<SubspaceParams>,   subspace);
 
   // constructor with default values
@@ -80,15 +83,17 @@ public:
     : nLevels(2)
     , blockSizes({{2,2,2,2}})
     , smootherTol({1e-14})
-    , smootherMaxOuterIter({4})
-    , smootherMaxInnerIter({4})
+    , smootherMaxIter({16})
+    , smootherRestartLength({4})
+    , smootherAlgorithm({"gmres"})
     , kCycle(true)
     , kCycleTol({1e-1})
-    , kCycleMaxOuterIter({2})
-    , kCycleMaxInnerIter({5})
+    , kCycleMaxIter({10})
+    , kCycleRestartLength({5})
     , coarseSolverTol(5e-2)
-    , coarseSolverMaxOuterIter(20)
-    , coarseSolverMaxInnerIter(20)
+    , coarseSolverMaxIter(400)
+    , coarseSolverRestartLength(20)
+    , coarseSolverAlgorithm("gmres")
     , subspace(1, SubspaceParams())
   {}
 };
@@ -100,11 +105,12 @@ void checkParameterValidity(MultiGridParams const &params) {
 
   assert(correctSize == params.blockSizes.size());
   assert(correctSize == params.smootherTol.size());
-  assert(correctSize == params.smootherMaxOuterIter.size());
-  assert(correctSize == params.smootherMaxInnerIter.size());
+  assert(correctSize == params.smootherMaxIter.size());
+  assert(correctSize == params.smootherRestartLength.size());
+  assert(correctSize == params.smootherAlgorithm.size());
   assert(correctSize == params.kCycleTol.size());
-  assert(correctSize == params.kCycleMaxOuterIter.size());
-  assert(correctSize == params.kCycleMaxInnerIter.size());
+  assert(correctSize == params.kCycleMaxIter.size());
+  assert(correctSize == params.kCycleRestartLength.size());
 }
 
 struct LevelInfo {
@@ -178,9 +184,12 @@ public:
   typedef Aggregation<Fobj, CComplex, nBasis>                                                                         Aggregates;
   typedef CoarsenedMatrix<Fobj, CComplex, nBasis>                                                                     CoarseDiracMatrix;
   typedef typename Aggregates::CoarseVector                                                                           CoarseVector;
+  typedef NonHermitianLinearOperator<CoarseDiracMatrix,CoarseVector>                                                  CoarseOperator;
   typedef typename Aggregates::siteVector                                                                             CoarseSiteVector;
   typedef Matrix                                                                                                      FineDiracMatrix;
   typedef typename Aggregates::FineField                                                                              FineVector;
+  typedef NonHermitianLinearOperator<FineDiracMatrix,FineVector>                                                      FineOperator;
+  typedef SolverHelpers::SolverChoice<FineOperator,FineVector>                                                        FineSmoother;
   typedef MultiGridPreconditioner<CoarseSiteVector, iScalar<CComplex>, nBasis, nCoarserLevels - 1, CoarseDiracMatrix> NextPreconditionerLevel;
   // clang-format on
 
@@ -196,8 +205,16 @@ public:
 
   FineDiracMatrix & _FineMatrix;
   FineDiracMatrix & _SmootherMatrix;
+
+  FineOperator _FineOperator;
+  FineOperator _SmootherOperator;
+
+  FineSmoother _SmootherSolver;
+
   Aggregates        _Aggregates;
   CoarseDiracMatrix _CoarseMatrix;
+
+  CoarseOperator _CoarseOperator;
 
   std::unique_ptr<NextPreconditionerLevel> _NextPreconditionerLevel;
 
@@ -223,8 +240,12 @@ public:
     , _LevelInfo(LvlInfo)
     , _FineMatrix(FineMat)
     , _SmootherMatrix(SmootherMat)
+    , _FineOperator(FineMat)
+    , _SmootherOperator(SmootherMat)
+    , _SmootherSolver(_SmootherOperator, mgParams.smootherTol[_CurrentLevel], mgParams.smootherMaxIter[_CurrentLevel], mgParams.smootherRestartLength[_CurrentLevel], mgParams.smootherAlgorithm[_CurrentLevel])
     , _Aggregates(_LevelInfo.Grids[_NextCoarserLevel], _LevelInfo.Grids[_CurrentLevel], 0)
-    , _CoarseMatrix(*_LevelInfo.Grids[_NextCoarserLevel], *_LevelInfo.RBGrids[_NextCoarserLevel]) {
+    , _CoarseMatrix(*_LevelInfo.Grids[_NextCoarserLevel], *_LevelInfo.RBGrids[_NextCoarserLevel])
+    , _CoarseOperator(_CoarseMatrix) {
 
     _NextPreconditionerLevel
       = std::unique_ptr<NextPreconditionerLevel>(new NextPreconditionerLevel(_MultiGridParams, _LevelInfo, _CoarseMatrix, _CoarseMatrix));
@@ -239,10 +260,8 @@ public:
     static_assert((nBasis & 0x1) == 0, "MG Preconditioner only supports an even number of basis vectors");
     int nb = nBasis / 2;
 
-    MdagMLinearOperator<FineDiracMatrix, FineVector> fineMdagMOp(_FineMatrix);
-
     _SetupCreateSubspaceTimer.Start();
-    CreateSubspace(_LevelInfo.PRNGs[_CurrentLevel], fineMdagMOp, _Aggregates.subspace, _MultiGridParams.subspace[_CurrentLevel]);
+    CreateSubspace(_LevelInfo.PRNGs[_CurrentLevel], _FineOperator, _Aggregates.subspace, _MultiGridParams.subspace[_CurrentLevel]);
     _SetupCreateSubspaceTimer.Stop();
 
     _SetupProjectToChiralitiesTimer.Start();
@@ -262,7 +281,7 @@ public:
     _Aggregates.Orthogonalise();
 
     _SetupCoarsenOperatorTimer.Start();
-    _CoarseMatrix.CoarsenOperator(_LevelInfo.Grids[_CurrentLevel], fineMdagMOp, _Aggregates);
+    _CoarseMatrix.CoarsenOperator(_LevelInfo.Grids[_CurrentLevel], _FineOperator, _Aggregates);
     _SetupCoarsenOperatorTimer.Stop();
 
     _SetupNextLevelTimer.Start();
@@ -294,23 +313,11 @@ public:
 
     FineVector fineTmp(in.Grid());
 
-    auto maxSmootherIter = _MultiGridParams.smootherMaxOuterIter[_CurrentLevel] * _MultiGridParams.smootherMaxInnerIter[_CurrentLevel];
-
-    TrivialPrecon<FineVector>                      fineTrivialPreconditioner;
-    FlexibleGeneralisedMinimalResidual<FineVector> fineFGMRES(_MultiGridParams.smootherTol[_CurrentLevel],
-                                                              maxSmootherIter,
-                                                              fineTrivialPreconditioner,
-                                                              _MultiGridParams.smootherMaxInnerIter[_CurrentLevel],
-                                                              false);
-
-    MdagMLinearOperator<FineDiracMatrix, FineVector> fineMdagMOp(_FineMatrix);
-    MdagMLinearOperator<FineDiracMatrix, FineVector> fineSmootherMdagMOp(_SmootherMatrix);
-
     _SolveSmootherTimer.Start();
-    fineFGMRES(fineSmootherMdagMOp, in, out);
+    _SmootherSolver(in, out);
     _SolveSmootherTimer.Stop();
 
-    fineMdagMOp.Op(out, fineTmp);
+    _FineOperator.Op(out, fineTmp);
     fineTmp = in - fineTmp;
     auto r = norm2(fineTmp);
     auto residualAfterPostSmoother = std::sqrt(r / inputNorm);
@@ -334,18 +341,6 @@ public:
 
     FineVector fineTmp(in.Grid());
 
-    auto maxSmootherIter = _MultiGridParams.smootherMaxOuterIter[_CurrentLevel] * _MultiGridParams.smootherMaxInnerIter[_CurrentLevel];
-
-    TrivialPrecon<FineVector>                      fineTrivialPreconditioner;
-    FlexibleGeneralisedMinimalResidual<FineVector> fineFGMRES(_MultiGridParams.smootherTol[_CurrentLevel],
-                                                              maxSmootherIter,
-                                                              fineTrivialPreconditioner,
-                                                              _MultiGridParams.smootherMaxInnerIter[_CurrentLevel],
-                                                              false);
-
-    MdagMLinearOperator<FineDiracMatrix, FineVector> fineMdagMOp(_FineMatrix);
-    MdagMLinearOperator<FineDiracMatrix, FineVector> fineSmootherMdagMOp(_SmootherMatrix);
-
     _SolveRestrictionTimer.Start();
     _Aggregates.ProjectToSubspace(coarseSrc, in);
     _SolveRestrictionTimer.Stop();
@@ -358,16 +353,16 @@ public:
     _Aggregates.PromoteFromSubspace(coarseSol, out);
     _SolveProlongationTimer.Stop();
 
-    fineMdagMOp.Op(out, fineTmp);
+    _FineOperator.Op(out, fineTmp);
     fineTmp                                = in - fineTmp;
     auto r                                 = norm2(fineTmp);
     auto residualAfterCoarseGridCorrection = std::sqrt(r / inputNorm);
 
     _SolveSmootherTimer.Start();
-    fineFGMRES(fineSmootherMdagMOp, in, out);
+    _SmootherSolver(in, out);
     _SolveSmootherTimer.Stop();
 
-    fineMdagMOp.Op(out, fineTmp);
+    _FineOperator.Op(out, fineTmp);
     fineTmp                        = in - fineTmp;
     r                              = norm2(fineTmp);
     auto residualAfterPostSmoother = std::sqrt(r / inputNorm);
@@ -391,47 +386,34 @@ public:
 
     FineVector fineTmp(in.Grid());
 
-    auto smootherMaxIter = _MultiGridParams.smootherMaxOuterIter[_CurrentLevel] * _MultiGridParams.smootherMaxInnerIter[_CurrentLevel];
-    auto kCycleMaxIter   = _MultiGridParams.kCycleMaxOuterIter[_CurrentLevel] * _MultiGridParams.kCycleMaxInnerIter[_CurrentLevel];
-
-    TrivialPrecon<FineVector>                        fineTrivialPreconditioner;
-    FlexibleGeneralisedMinimalResidual<FineVector>   fineFGMRES(_MultiGridParams.smootherTol[_CurrentLevel],
-                                                              smootherMaxIter,
-                                                              fineTrivialPreconditioner,
-                                                              _MultiGridParams.smootherMaxInnerIter[_CurrentLevel],
-                                                              false);
     FlexibleGeneralisedMinimalResidual<CoarseVector> coarseFGMRES(_MultiGridParams.kCycleTol[_CurrentLevel],
-                                                                  kCycleMaxIter,
+                                                                  _MultiGridParams.kCycleMaxIter[_CurrentLevel],
                                                                   *_NextPreconditionerLevel,
-                                                                  _MultiGridParams.kCycleMaxInnerIter[_CurrentLevel],
+                                                                  _MultiGridParams.kCycleRestartLength[_CurrentLevel],
                                                                   false);
-
-    MdagMLinearOperator<FineDiracMatrix, FineVector>     fineMdagMOp(_FineMatrix);
-    MdagMLinearOperator<FineDiracMatrix, FineVector>     fineSmootherMdagMOp(_SmootherMatrix);
-    MdagMLinearOperator<CoarseDiracMatrix, CoarseVector> coarseMdagMOp(_CoarseMatrix);
 
     _SolveRestrictionTimer.Start();
     _Aggregates.ProjectToSubspace(coarseSrc, in);
     _SolveRestrictionTimer.Stop();
 
     _SolveNextLevelTimer.Start();
-    coarseFGMRES(coarseMdagMOp, coarseSrc, coarseSol);
+    coarseFGMRES(_CoarseOperator, coarseSrc, coarseSol);
     _SolveNextLevelTimer.Stop();
 
     _SolveProlongationTimer.Start();
     _Aggregates.PromoteFromSubspace(coarseSol, out);
     _SolveProlongationTimer.Stop();
 
-    fineMdagMOp.Op(out, fineTmp);
+    _FineOperator.Op(out, fineTmp);
     fineTmp                                = in - fineTmp;
     auto r                                 = norm2(fineTmp);
     auto residualAfterCoarseGridCorrection = std::sqrt(r / inputNorm);
 
     _SolveSmootherTimer.Start();
-    fineFGMRES(fineSmootherMdagMOp, in, out);
+    _SmootherSolver(in, out);
     _SolveSmootherTimer.Stop();
 
-    fineMdagMOp.Op(out, fineTmp);
+    _FineOperator.Op(out, fineTmp);
     fineTmp                        = in - fineTmp;
     r                              = norm2(fineTmp);
     auto residualAfterPostSmoother = std::sqrt(r / inputNorm);
@@ -638,8 +620,10 @@ public:
   // Type Definitions
   /////////////////////////////////////////////
 
-  typedef Matrix        FineDiracMatrix;
-  typedef Lattice<Fobj> FineVector;
+  typedef Matrix                                                 FineDiracMatrix;
+  typedef Lattice<Fobj>                                          FineVector;
+  typedef NonHermitianLinearOperator<FineDiracMatrix,FineVector> FineOperator;
+  typedef SolverHelpers::SolverChoice<FineOperator,FineVector>   FineSolver;
 
   /////////////////////////////////////////////
   // Member Data
@@ -653,6 +637,11 @@ public:
   FineDiracMatrix &_FineMatrix;
   FineDiracMatrix &_SmootherMatrix;
 
+  FineOperator _FineOperator;
+  FineOperator _SmootherOperator;
+
+  FineSolver _FineSolver;
+
   GridStopWatch _SolveTotalTimer;
   GridStopWatch _SolveSmootherTimer;
 
@@ -665,7 +654,11 @@ public:
     , _MultiGridParams(mgParams)
     , _LevelInfo(LvlInfo)
     , _FineMatrix(FineMat)
-    , _SmootherMatrix(SmootherMat) {
+    , _SmootherMatrix(SmootherMat)
+    , _FineOperator(FineMat)
+    , _SmootherOperator(SmootherMat)
+    , _FineSolver(_SmootherOperator, mgParams.coarseSolverTol, mgParams.coarseSolverMaxIter, mgParams.coarseSolverRestartLength, mgParams.coarseSolverAlgorithm)
+  {
 
     resetTimers();
   }
@@ -679,17 +672,8 @@ public:
     conformable(_LevelInfo.Grids[_CurrentLevel], in.Grid());
     conformable(in, out);
 
-    auto coarseSolverMaxIter = _MultiGridParams.coarseSolverMaxOuterIter * _MultiGridParams.coarseSolverMaxInnerIter;
-
-    // On the coarsest level we only have what I above call the fine level, no coarse one
-    TrivialPrecon<FineVector>                      fineTrivialPreconditioner;
-    FlexibleGeneralisedMinimalResidual<FineVector> fineFGMRES(
-      _MultiGridParams.coarseSolverTol, coarseSolverMaxIter, fineTrivialPreconditioner, _MultiGridParams.coarseSolverMaxInnerIter, false);
-
-    MdagMLinearOperator<FineDiracMatrix, FineVector> fineMdagMOp(_FineMatrix);
-
     _SolveSmootherTimer.Start();
-    fineFGMRES(fineMdagMOp, in, out);
+    _FineSolver(in, out);
     _SolveSmootherTimer.Stop();
 
     _SolveTotalTimer.Stop();
