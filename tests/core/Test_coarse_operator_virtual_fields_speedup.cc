@@ -708,7 +708,7 @@ public: // member functions (implementing interface) //////////////////////////
 
               for(int bb=0;bb<NbasisVirtual;bb++) {
                 res = res + coalescedRead(Uc_p[v_row*NvirtualFermion+v_col][ss](point)(b,bb))*nbr(bb);
-                // res = res + coalescedRead(Uc_p[v_col*NvirtualFermion+v_row][ss](b,bb))*nbr(bb);
+                // res = res + coalescedRead(Uc_p[v_col*NvirtualFermion+v_row][ss](point)(b,bb))*nbr(bb);
               }
             }
             coalescedWrite(out_v[ss](b),res);
