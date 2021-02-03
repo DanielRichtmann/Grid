@@ -887,6 +887,113 @@ public: // member functions (implementing interface) //////////////////////////
     MTotalTime += usecond();
   }
 
+  void M_loopinternal_gridlayout_parchange_commsreduce(const FermionField& in, uint64_t in_n_virtual, FermionField& out, uint64_t out_n_virtual) {
+    // NOTE: version with additional parallelism over output virtual index + reducing comms by temporary 5d object -- Lorentz in std::vector
+    MCalls++;
+    MTotalTime -= usecond();
+    MMiscTime -= usecond();
+    const int Narg            = numArg(in, in_n_virtual, out, out_n_virtual);
+    const int NvirtualFermion = in_n_virtual;
+    const int NvirtualLink    = NvirtualFermion*NvirtualFermion;
+    const int Nsimd           = SiteSpinor::Nsimd();
+    const int Nsite           = Grid()->oSites();
+    const int Npoint          = geom_.npoint;
+
+    assert(n_arg_ == Narg);
+
+    conformable(Grid(), in);
+    conformable(Grid(), out);
+    constantCheckerboard(in, out);
+
+    SimpleCompressor<SiteSpinor> compressor;
+    MMiscTime += usecond();
+
+    {
+      MView2Time-=usecond();
+      VECTOR_VIEW_OPEN_POINTER(in, in_v, in_p, AcceleratorRead);
+      autoView(tmpMultiArg_v, tmpMultiArg_, AcceleratorWrite);
+      MView2Time+=usecond();
+      MCopyTime-=usecond();
+      accelerator_for(sF, Nsite*NvirtualFermion*Narg, Nsimd, {
+              int _sF   = sF;                  // this does fastest to slowest from top to bottom
+        const int arg   = _sF%Narg;            _sF/=Narg;
+        const int v_col = _sF%NvirtualFermion; _sF/=NvirtualFermion;
+        const int sU    = _sF%Nsite;           _sF/=Nsite;
+        coalescedWrite(tmpMultiArg_v[sF], in_v[arg*NvirtualFermion+v_col](sU));
+        // printf("COPY: sF = %4d, arg = %4d, sU = %4d, v_col = %4d\n", sF, arg, sU, v_col); fflush(stdout);
+      });
+      MCopyTime+=usecond();
+      MView2Time-=usecond();
+      VECTOR_VIEW_CLOSE_POINTER(in_v, in_p);
+      MView2Time+=usecond();
+    }
+
+    MCommTime-=usecond();
+    stencilMultiArg_.HaloExchange(tmpMultiArg_, compressor);
+    MCommTime+=usecond();
+
+    MViewTime -= usecond();
+    VECTOR_VIEW_OPEN_POINTER(UcGridLayout_, UcGridLayout_v, UcGridLayout_p, AcceleratorRead);
+    VECTOR_VIEW_OPEN_POINTER(in, in_v, in_p, AcceleratorRead);
+    autoView(tmpMultiArg_v, tmpMultiArg_, AcceleratorRead);
+    autoView(stencilMultiArg_v, stencilMultiArg_, AcceleratorRead);
+    VECTOR_VIEW_OPEN_POINTER(out, out_v, out_p, AcceleratorWrite);
+    MViewTime += usecond();
+
+    for(int v_col=0; v_col<NvirtualFermion; v_col++) {
+      typedef decltype(coalescedRead(tmpMultiArg_v[0]))    calcVector;
+      typedef decltype(coalescedRead(tmpMultiArg_v[0](0))) calcComplex;
+
+      MComputeTime -= usecond();
+      accelerator_for(idx, Nsite*NvirtualFermion*Narg, Nsimd, {
+              int _idx  = idx;
+        const int arg   = _idx%Narg; _idx/=Narg;
+        const int v_row = _idx%NvirtualFermion; _idx/=NvirtualFermion;
+        const int ss    = _idx%Nsite; _idx/=Nsite;
+
+        const int v_arg_col = arg*NvirtualFermion+v_col;
+        const int v_arg_row = arg*NvirtualFermion+v_row;
+        const int v_row_col = v_row * NvirtualFermion + v_col;
+        const int v_col_row = v_col * NvirtualFermion + v_row;
+        const int sF        = ss*NvirtualFermion*Narg+v_col*Narg+arg; // needed for stencil access
+
+        calcVector res;
+        calcVector nbr;
+        int ptype;
+        StencilEntry *SE_MA;
+
+        if (v_col == 0)
+          res = Zero();
+        else
+          res = coalescedRead(out_p[v_arg_row][ss]);
+
+        for(int point=0; point<Npoint; point++) {
+          SE_MA=stencilMultiArg_v.GetEntry(ptype,point,sF);
+
+          if(SE_MA->_is_local) {
+            nbr = coalescedReadPermute(tmpMultiArg_v[SE_MA->_offset],ptype,SE_MA->_permute);
+          } else {
+            nbr = coalescedRead(stencilMultiArg_v.CommBuf()[SE_MA->_offset]);
+          }
+          acceleratorSynchronise();
+
+          // res = res + coalescedRead(UcGridLayout_p[point*NvirtualLink+v_row_col][ss])*nbr;
+          // res = res + coalescedRead(UcGridLayout_p[point*NvirtualLink+v_col_row][ss])*nbr;
+          res = res + coalescedRead(UcGridLayout_p[v_row*NvirtualFermion*Npoint+v_col*Npoint+point][ss])*nbr;
+          // res = res + coalescedRead(UcGridLayout_p[v_col*NvirtualFermion*Npoint+v_row*Npoint+point][ss])*nbr;
+        }
+        coalescedWrite(out_p[v_arg_row][ss],res);
+      });
+      MComputeTime += usecond();
+    }
+    MViewTime -= usecond();
+    VECTOR_VIEW_CLOSE_POINTER(UcGridLayout_v, UcGridLayout_p);
+    VECTOR_VIEW_CLOSE_POINTER(in_v, in_p);
+    VECTOR_VIEW_CLOSE_POINTER(out_v, out_p);
+    MViewTime += usecond();
+    MTotalTime += usecond();
+  }
+
   void M_loopinternal_tensorlayout_parchange_commsreduce(const FermionField& in, uint64_t in_n_virtual, FermionField& out, uint64_t out_n_virtual) {
     // NOTE: version with additional parallelism over output virtual index + reducing comms by temporary 5d object -- Lorentz in tensor
     MCalls++;
@@ -1349,6 +1456,116 @@ public: // member functions (implementing interface) //////////////////////////
     }
     MViewTime -= usecond();
     VECTOR_VIEW_CLOSE_POINTER(Uc_v, Uc_p);
+    VECTOR_VIEW_CLOSE_POINTER(out_v, out_p);
+    MViewTime += usecond();
+    MTotalTime += usecond();
+  }
+
+  void M_finegrained_loopinternal_gridlayout_parchange_commsreduce(const FermionField& in, uint64_t in_n_virtual, FermionField& out, uint64_t out_n_virtual) {
+    // NOTE: version with additional parallelism over output virtual index + reducing comms by temporary 5d object -- Lorentz in std::vector
+    MCalls++;
+    MTotalTime -= usecond();
+    MMiscTime -= usecond();
+    const int Narg            = numArg(in, in_n_virtual, out, out_n_virtual);
+    const int NvirtualFermion = in_n_virtual;
+    const int NvirtualLink    = NvirtualFermion*NvirtualFermion;
+    const int Nsimd           = SiteSpinor::Nsimd();
+    const int Nsite           = Grid()->oSites();
+    const int Npoint          = geom_.npoint;
+
+    assert(n_arg_ == Narg);
+
+    conformable(Grid(), in);
+    conformable(Grid(), out);
+    constantCheckerboard(in, out);
+
+    SimpleCompressor<SiteSpinor> compressor;
+    MMiscTime += usecond();
+
+    {
+      MView2Time-=usecond();
+      VECTOR_VIEW_OPEN_POINTER(in, in_v, in_p, AcceleratorRead);
+      autoView(tmpMultiArg_v, tmpMultiArg_, AcceleratorWrite);
+      MView2Time+=usecond();
+      MCopyTime-=usecond();
+      accelerator_for(sF, Nsite*NvirtualFermion*Narg, Nsimd, {
+              int _sF   = sF;                  // this does fastest to slowest from top to bottom
+        const int arg   = _sF%Narg;            _sF/=Narg;
+        const int v_col = _sF%NvirtualFermion; _sF/=NvirtualFermion;
+        const int sU    = _sF%Nsite;           _sF/=Nsite;
+        coalescedWrite(tmpMultiArg_v[sF], in_v[arg*NvirtualFermion+v_col](sU));
+        // printf("COPY: sF = %4d, arg = %4d, sU = %4d, v_col = %4d\n", sF, arg, sU, v_col); fflush(stdout);
+      });
+      MCopyTime+=usecond();
+      MView2Time-=usecond();
+      VECTOR_VIEW_CLOSE_POINTER(in_v, in_p);
+      MView2Time+=usecond();
+    }
+
+    MCommTime-=usecond();
+    stencilMultiArg_.HaloExchange(tmpMultiArg_, compressor);
+    MCommTime+=usecond();
+
+    MViewTime -= usecond();
+    VECTOR_VIEW_OPEN_POINTER(UcGridLayout_, UcGridLayout_v, UcGridLayout_p, AcceleratorRead);
+    VECTOR_VIEW_OPEN_POINTER(in, in_v, in_p, AcceleratorRead);
+    autoView(tmpMultiArg_v, tmpMultiArg_, AcceleratorRead);
+    autoView(stencilMultiArg_v, stencilMultiArg_, AcceleratorRead);
+    VECTOR_VIEW_OPEN_POINTER(out, out_v, out_p, AcceleratorWrite);
+    MViewTime += usecond();
+
+    for(int v_col=0; v_col<NvirtualFermion; v_col++) {
+      typedef decltype(coalescedRead(tmpMultiArg_v[0]))    calcVector;
+      typedef decltype(coalescedRead(tmpMultiArg_v[0](0))) calcComplex;
+
+      MComputeTime -= usecond();
+      accelerator_for(idx, Nsite*NvirtualFermion*Narg*NbasisVirtual, Nsimd, {
+              int _idx  = idx;
+        const int b     = _idx%NbasisVirtual; _idx/=NbasisVirtual;
+        const int arg   = _idx%Narg; _idx/=Narg;
+        const int v_row = _idx%NvirtualFermion; _idx/=NvirtualFermion;
+        const int ss    = _idx%Nsite; _idx/=Nsite;
+
+        const int v_arg_col = arg*NvirtualFermion+v_col;
+        const int v_arg_row = arg*NvirtualFermion+v_row;
+        const int v_row_col = v_row * NvirtualFermion + v_col;
+        const int v_col_row = v_col * NvirtualFermion + v_row;
+        const int sF        = ss*NvirtualFermion*Narg+v_col*Narg+arg; // needed for stencil access
+
+        calcComplex res;
+        calcVector nbr;
+        int ptype;
+        StencilEntry *SE_MA;
+
+        if (v_col == 0)
+          res = Zero();
+        else
+          res = coalescedRead(out_p[v_arg_row][ss](b));
+
+        for(int point=0; point<Npoint; point++) {
+          SE_MA=stencilMultiArg_v.GetEntry(ptype,point,sF);
+
+          if(SE_MA->_is_local) {
+            nbr = coalescedReadPermute(tmpMultiArg_v[SE_MA->_offset],ptype,SE_MA->_permute);
+          } else {
+            nbr = coalescedRead(stencilMultiArg_v.CommBuf()[SE_MA->_offset]);
+          }
+          acceleratorSynchronise();
+
+          for(int bb=0;bb<NbasisVirtual;bb++) {
+            // res = res + coalescedRead(UcGridLayout_p[point*NvirtualLink+v_row_col][ss](b,bb))*nbr(bb);
+            // res = res + coalescedRead(UcGridLayout_p[point*NvirtualLink+v_col_row][ss](b,bb))*nbr(bb);
+            res = res + coalescedRead(UcGridLayout_p[v_row*NvirtualFermion*Npoint+v_col*Npoint+point][ss](b,bb))*nbr(bb);
+            // res = res + coalescedRead(UcGridLayout_p[v_col*NvirtualFermion*Npoint+v_row*Npoint+point][ss](b,bb))*nbr(bb);
+          }
+        }
+        coalescedWrite(out_p[v_arg_row][ss](b),res);
+      });
+      MComputeTime += usecond();
+    }
+    MViewTime -= usecond();
+    VECTOR_VIEW_CLOSE_POINTER(UcGridLayout_v, UcGridLayout_p);
+    VECTOR_VIEW_CLOSE_POINTER(in_v, in_p);
     VECTOR_VIEW_CLOSE_POINTER(out_v, out_p);
     MViewTime += usecond();
     MTotalTime += usecond();
@@ -1818,12 +2035,14 @@ void runBenchmark(int* argc, char*** argv) {
   BENCH_OPERATOR_KERNELVERSION(op_new,     loopinternal_tensorlayout);                                   PRINT_OPERATOR_KERNELVERSION(op_new,     loopinternal_tensorlayout);
   BENCH_OPERATOR_KERNELVERSION(op_new,     loopinternal_gridlayout_parchange);                           PRINT_OPERATOR_KERNELVERSION(op_new,     loopinternal_gridlayout_parchange);
   BENCH_OPERATOR_KERNELVERSION(op_new,     loopinternal_tensorlayout_parchange);                         PRINT_OPERATOR_KERNELVERSION(op_new,     loopinternal_tensorlayout_parchange);
+  BENCH_OPERATOR_KERNELVERSION(op_new,     loopinternal_gridlayout_parchange_commsreduce);               PRINT_OPERATOR_KERNELVERSION(op_new,     loopinternal_gridlayout_parchange_commsreduce);
   BENCH_OPERATOR_KERNELVERSION(op_new,     loopinternal_tensorlayout_parchange_commsreduce);             PRINT_OPERATOR_KERNELVERSION(op_new,     loopinternal_tensorlayout_parchange_commsreduce);
   #endif
   BENCH_OPERATOR_KERNELVERSION(op_new,     finegrained_loopinternal_gridlayout);                         PRINT_OPERATOR_KERNELVERSION(op_new,     finegrained_loopinternal_gridlayout);
   BENCH_OPERATOR_KERNELVERSION(op_new,     finegrained_loopinternal_tensorlayout);                       PRINT_OPERATOR_KERNELVERSION(op_new,     finegrained_loopinternal_tensorlayout);
   BENCH_OPERATOR_KERNELVERSION(op_new,     finegrained_loopinternal_gridlayout_parchange);               PRINT_OPERATOR_KERNELVERSION(op_new,     finegrained_loopinternal_gridlayout_parchange);
   BENCH_OPERATOR_KERNELVERSION(op_new,     finegrained_loopinternal_tensorlayout_parchange);             PRINT_OPERATOR_KERNELVERSION(op_new,     finegrained_loopinternal_tensorlayout_parchange);
+  BENCH_OPERATOR_KERNELVERSION(op_new,     finegrained_loopinternal_gridlayout_parchange_commsreduce);   PRINT_OPERATOR_KERNELVERSION(op_new,     finegrained_loopinternal_gridlayout_parchange_commsreduce);
   BENCH_OPERATOR_KERNELVERSION(op_new,     finegrained_loopinternal_tensorlayout_parchange_commsreduce); PRINT_OPERATOR_KERNELVERSION(op_new,     finegrained_loopinternal_tensorlayout_parchange_commsreduce);
 
 #undef BENCH_OPERATOR_KERNELVERSION
