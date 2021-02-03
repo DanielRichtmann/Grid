@@ -539,7 +539,7 @@ public: // member functions (implementing interface) //////////////////////////
   int ConstEE()     { return 0; }
   int isTrivialEE() { return 0; }
 
-  void M_loopinternal_gridlayout(const FermionField& in, uint64_t in_n_virtual, FermionField& out, uint64_t out_n_virtual) {
+  void M_finegrained_loopinternal_gridlayout(const FermionField& in, uint64_t in_n_virtual, FermionField& out, uint64_t out_n_virtual) {
     // NOTE: most basic version looping over Grid's code internally -- Lorentz in std::vector
     MCalls++;
     MTotalTime -= usecond();
@@ -632,7 +632,7 @@ public: // member functions (implementing interface) //////////////////////////
     MTotalTime += usecond();
   }
 
-  void M_loopinternal_tensorlayout(const FermionField& in, uint64_t in_n_virtual, FermionField& out, uint64_t out_n_virtual) {
+  void M_finegrained_loopinternal_tensorlayout(const FermionField& in, uint64_t in_n_virtual, FermionField& out, uint64_t out_n_virtual) {
     // NOTE: most basic version looping over Grid's code internally -- Lorentz in tensor
     MCalls++;
     MTotalTime -= usecond();
@@ -723,7 +723,7 @@ public: // member functions (implementing interface) //////////////////////////
     MTotalTime += usecond();
   }
 
-  void M_loopinternal_gridlayout_parchange(const FermionField& in, uint64_t in_n_virtual, FermionField& out, uint64_t out_n_virtual) {
+  void M_finegrained_loopinternal_gridlayout_parchange(const FermionField& in, uint64_t in_n_virtual, FermionField& out, uint64_t out_n_virtual) {
     // NOTE: version with additional parallelism over output virtual index -- Lorentz in std::vector
     MCalls++;
     MTotalTime -= usecond();
@@ -813,7 +813,7 @@ public: // member functions (implementing interface) //////////////////////////
     MTotalTime += usecond();
   }
 
-  void M_loopinternal_tensorlayout_parchange(const FermionField& in, uint64_t in_n_virtual, FermionField& out, uint64_t out_n_virtual) {
+  void M_finegrained_loopinternal_tensorlayout_parchange(const FermionField& in, uint64_t in_n_virtual, FermionField& out, uint64_t out_n_virtual) {
     // NOTE: version with additional parallelism over output virtual index -- Lorentz in tensor
     MCalls++;
     MTotalTime -= usecond();
@@ -901,7 +901,7 @@ public: // member functions (implementing interface) //////////////////////////
     MTotalTime += usecond();
   }
 
-  void M_loopinternal_tensorlayout_parchange_commsreduce(const FermionField& in, uint64_t in_n_virtual, FermionField& out, uint64_t out_n_virtual) {
+  void M_finegrained_loopinternal_tensorlayout_parchange_commsreduce(const FermionField& in, uint64_t in_n_virtual, FermionField& out, uint64_t out_n_virtual) {
     // NOTE: version with additional parallelism over output virtual index + reducing comms by temporary 5d object -- Lorentz in tensor
     MCalls++;
     MTotalTime -= usecond();
@@ -1358,12 +1358,13 @@ void runBenchmark(int* argc, char*** argv) {
   grid_printf_flush("\n");\
 }
 
-  BENCH_OPERATOR_KERNELVERSION(op_default, gptdefault_loop_gpt);                 PRINT_OPERATOR_KERNELVERSION(op_default, gptdefault_loop_gpt);
-  BENCH_OPERATOR_KERNELVERSION(op_default, gptdefault_loop_natural);             PRINT_OPERATOR_KERNELVERSION(op_default, gptdefault_loop_natural);
-  BENCH_OPERATOR_KERNELVERSION(op_new,     loopinternal_gridlayout);             PRINT_OPERATOR_KERNELVERSION(op_new,     loopinternal_gridlayout);
-  BENCH_OPERATOR_KERNELVERSION(op_new,     loopinternal_tensorlayout);           PRINT_OPERATOR_KERNELVERSION(op_new,     loopinternal_tensorlayout);
-  BENCH_OPERATOR_KERNELVERSION(op_new,     loopinternal_gridlayout_parchange);   PRINT_OPERATOR_KERNELVERSION(op_new,     loopinternal_gridlayout_parchange);
-  BENCH_OPERATOR_KERNELVERSION(op_new,     loopinternal_tensorlayout_parchange); PRINT_OPERATOR_KERNELVERSION(op_new,     loopinternal_tensorlayout_parchange);
+  BENCH_OPERATOR_KERNELVERSION(op_default, gptdefault_loop_gpt);                                         PRINT_OPERATOR_KERNELVERSION(op_default, gptdefault_loop_gpt);
+  BENCH_OPERATOR_KERNELVERSION(op_default, gptdefault_loop_natural);                                     PRINT_OPERATOR_KERNELVERSION(op_default, gptdefault_loop_natural);
+  BENCH_OPERATOR_KERNELVERSION(op_new,     finegrained_loopinternal_gridlayout);                         PRINT_OPERATOR_KERNELVERSION(op_new,     finegrained_loopinternal_gridlayout);
+  BENCH_OPERATOR_KERNELVERSION(op_new,     finegrained_loopinternal_tensorlayout);                       PRINT_OPERATOR_KERNELVERSION(op_new,     finegrained_loopinternal_tensorlayout);
+  BENCH_OPERATOR_KERNELVERSION(op_new,     finegrained_loopinternal_gridlayout_parchange);               PRINT_OPERATOR_KERNELVERSION(op_new,     finegrained_loopinternal_gridlayout_parchange);
+  BENCH_OPERATOR_KERNELVERSION(op_new,     finegrained_loopinternal_tensorlayout_parchange);             PRINT_OPERATOR_KERNELVERSION(op_new,     finegrained_loopinternal_tensorlayout_parchange);
+  BENCH_OPERATOR_KERNELVERSION(op_new,     finegrained_loopinternal_tensorlayout_parchange_commsreduce); PRINT_OPERATOR_KERNELVERSION(op_new,     finegrained_loopinternal_tensorlayout_parchange_commsreduce);
 
 #undef BENCH_OPERATOR_KERNELVERSION
 #undef PRINT_OPERATOR_KERNELVERSION
