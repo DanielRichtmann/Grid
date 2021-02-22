@@ -1214,6 +1214,10 @@ public:
       grid_msg("CoarsenedMatrix Stencil\n"); Stencil.Report();
       grid_msg("CoarsenedMatrix StencilEven\n"); StencilEven.Report();
       grid_msg("CoarsenedMatrix StencilOdd\n"); StencilOdd.Report();
+
+      grid_msg("CoarsenedMatrix Stencil     Reportii()\n"); Stencil.Reportii(MCalls);
+      grid_msg("CoarsenedMatrix StencilEven Reportii()\n"); StencilEven.Reportii(MCalls);
+      grid_msg("CoarsenedMatrix StencilOdd  Reportii()\n"); StencilOdd.Reportii(MCalls);
     }
   }
 
@@ -1230,6 +1234,9 @@ public:
     Stencil.ZeroCounters();
     StencilEven.ZeroCounters();
     StencilOdd.ZeroCounters();
+    Stencil.ZeroCountersii();
+    StencilEven.ZeroCountersii();
+    StencilOdd.ZeroCountersii();
   }
 };
 

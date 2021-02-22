@@ -246,6 +246,33 @@ public:
     Integer buffer_size;
   };
 
+  double mtimer0;
+  double mtimer1;
+  double mtimer2;
+  double mtimer3;
+  double mtimer4;
+  double mtimer5;
+  double mtimer6;
+  uint64_t callsii;
+  void ZeroCountersii(void)
+  {
+    mtimer0=0;
+    mtimer1=0;
+    mtimer2=0;
+    mtimer3=0;
+    mtimer4=0;
+    mtimer5=0;
+    mtimer6=0;
+    callsii=0;
+  }
+  void Reportii(int calls)
+  {
+    if ( mtimer0 ) std::cout << GridLogMessage << " timer0 (HaloGather )   " <<mtimer0/calls <<std::endl;
+    if ( mtimer1 ) std::cout << GridLogMessage << " timer1 (Communicate)   " <<mtimer1/calls <<std::endl;
+    if ( mtimer2 ) std::cout << GridLogMessage << " timer2 (CommsMerge )   " <<mtimer2/calls <<std::endl;
+    if ( mtimer3 ) std::cout << GridLogMessage << " timer3 (commsMergeShm) " <<mtimer3/calls <<std::endl;
+    if ( mtimer4 ) std::cout << GridLogMessage << " timer4 " <<mtimer4 <<std::endl;
+  }
 
 protected:
   GridBase *                        _grid;
@@ -469,10 +496,15 @@ public:
   template<class compressor> void HaloExchange(const Lattice<vobj> &source,compressor &compress)
   {
     Prepare();
+    double t0=usecond();
     HaloGather(source,compress);
+    double t1=usecond(); mtimer0 += t1-t0;
     Communicate();
-    CommsMergeSHM(compress);
+    double t2=usecond(); mtimer1 += t2-t1;
     CommsMerge(compress);
+    double t3=usecond(); mtimer2 += t3-t2;
+    CommsMergeSHM(compress);
+    double t4=usecond(); mtimer3 += t4-t3;
   }
 
   template<class compressor> int HaloGatherDir(const Lattice<vobj> &source,compressor &compress,int point,int & face_idx)
@@ -556,6 +588,7 @@ public:
 
     accelerator_barrier();
     halogtime+=usecond();
+    callsii++;
   }
 
   /////////////////////////
