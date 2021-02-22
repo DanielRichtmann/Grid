@@ -117,6 +117,7 @@ void run_benchmark(int* argc, char*** argv) {
 
   // point field aliases to correct fields
   std::vector<CoarseVector>& src_M           = src_full, res_M           = res_full;
+  std::vector<CoarseVector>& src_M_overlapped_comms        = src_full, res_M_overlapped_comms        = res_full;
   std::vector<CoarseVector>& src_Mdag        = src_full, res_Mdag        = res_full;
   std::vector<CoarseVector>& src_Meooe       = src_e,    res_Meooe       = res_o;
   std::vector<CoarseVector>& src_MeooeDag    = src_e,    res_MeooeDag    = res_o;
@@ -142,6 +143,14 @@ void run_benchmark(int* argc, char*** argv) {
   double flops_M          = flops_per_site_M * UGrid->gSites() * nIter;
   double words_M          = words_per_site_M * UGrid->gSites() * nIter;
   double nbytes_M         = bytes_per_site_M * UGrid->gSites() * nIter;
+
+  // performance figures -- M_overlapped_comms
+  double flops_per_site_M_overlapped_comms = flops_per_site_M;
+  double words_per_site_M_overlapped_comms = words_per_site_M;
+  double bytes_per_site_M_overlapped_comms = bytes_per_site_M;
+  double flops_M_overlapped_comms          = flops_M;
+  double words_M_overlapped_comms          = words_M;
+  double nbytes_M_overlapped_comms         = nbytes_M;
 
   // performance figures -- Mdag
   double flops_per_site_Mdag = flops_per_site_M;
@@ -250,6 +259,7 @@ void run_benchmark(int* argc, char*** argv) {
 }
 
   BENCH_OPERATOR_METHOD(M);           PRINT_OPERATOR_METHOD(M);
+  BENCH_OPERATOR_METHOD(M_overlapped_comms);           PRINT_OPERATOR_METHOD(M_overlapped_comms);
   BENCH_OPERATOR_METHOD(Mdag);        PRINT_OPERATOR_METHOD(Mdag);
   BENCH_OPERATOR_METHOD(Meooe);       PRINT_OPERATOR_METHOD(Meooe);
   BENCH_OPERATOR_METHOD(MeooeDag);    PRINT_OPERATOR_METHOD(MeooeDag);

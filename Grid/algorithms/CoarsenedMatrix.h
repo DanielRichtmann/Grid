@@ -341,8 +341,10 @@ public:
   double MCalls;
   double MMiscTime;
   double MViewTime;
+  double MFaceTime;
   double MCommTime;
   double MComputeTime;
+  double MComputeTime2;
   double MTotalTime;
 
   ///////////////////////
@@ -414,6 +416,127 @@ public:
       coalescedWrite(out_v[ss](b),res);
       });
       MComputeTime+=usecond();
+
+    MViewTime-=usecond();
+    for(int p=0;p<geom.npoint;p++) AcceleratorViewContainer[p].ViewClose();
+    MViewTime+=usecond();
+    MTotalTime+=usecond();
+  };
+
+  void M_overlapped_comms (const CoarseVector &in, CoarseVector &out)
+  {
+    MCalls++;
+    MTotalTime-=usecond();
+    MMiscTime-=usecond();
+    conformable(_grid,in.Grid());
+    conformable(in.Grid(),out.Grid());
+    out.Checkerboard() = in.Checkerboard();
+
+    SimpleCompressor<siteVector> compressor;
+    MMiscTime+=usecond();
+
+    MFaceTime-=usecond();
+    Stencil.Prepare();
+    Stencil.HaloGather(in,compressor);
+    MFaceTime+=usecond();
+
+    MCommTime-=usecond();
+    std::vector<std::vector<CommsRequest_t> > requests;
+    Stencil.CommunicateBegin(requests);
+
+    MFaceTime-=usecond();
+    Stencil.CommsMergeSHM(compressor);
+    MFaceTime+=usecond();
+
+    MViewTime-=usecond();
+    autoView( in_v , in, AcceleratorRead);
+    autoView( out_v , out, AcceleratorWrite);
+    autoView( Stencil_v  , Stencil, AcceleratorRead);
+    auto& geom_v = geom;
+    typedef LatticeView<Cobj> Aview;
+
+    Vector<Aview> AcceleratorViewContainer;
+
+    for(int p=0;p<geom.npoint;p++) AcceleratorViewContainer.push_back(A[p].View(AcceleratorRead));
+    Aview *Aview_p = & AcceleratorViewContainer[0];
+    MViewTime+=usecond();
+
+    // compute interior
+    MComputeTime-=usecond();
+    const int Nsimd = CComplex::Nsimd();
+    const int osites=Grid()->oSites();
+    typedef decltype(coalescedRead(in_v[0])) calcVector;
+    typedef decltype(coalescedRead(in_v[0](0))) calcComplex;
+    accelerator_forNB(sss, Grid()->oSites()*nbasis, Nsimd, {
+      int ss = sss/nbasis;
+      int b  = sss%nbasis;
+      calcComplex res = Zero();
+      calcVector nbr;
+      int ptype;
+      StencilEntry *SE;
+
+      const int lane=acceleratorSIMTlane(Nsimd);
+
+      for(int point=0;point<geom_v.npoint;point++){
+
+	SE=Stencil_v.GetEntry(ptype,point,ss);
+
+	if(SE->_is_local) {
+	  nbr = coalescedReadPermute(in_v[SE->_offset],ptype,SE->_permute,lane);
+	} else if (Stencil_v.same_node[point]) {
+	  nbr = coalescedRead(Stencil_v.CommBuf()[SE->_offset],lane);
+	}
+	acceleratorSynchronise();
+        if (SE->_is_local || Stencil_v.same_node[point] ) {
+          for(int bb=0;bb<nbasis;bb++) {
+            res = res + coalescedRead(Aview_p[point][ss](b,bb),lane)*nbr(bb);
+          }
+        }
+        acceleratorSynchronise();
+      }
+      coalescedWrite(out_v[ss](b),res);
+      });
+      MComputeTime+=usecond();
+
+    MFaceTime-=usecond();
+    Stencil.CommsMerge(compressor);
+    MFaceTime+=usecond();
+
+    // ordering here?
+    Stencil.CommunicateComplete(requests);
+    MCommTime+=usecond();
+
+    // compute exterior
+    MComputeTime2-=usecond();
+    accelerator_for(sss, Grid()->oSites()*nbasis, Nsimd, {
+      int ss = sss/nbasis;
+      int b  = sss%nbasis;
+      calcComplex res = Zero();
+      calcVector nbr;
+      int ptype;
+      StencilEntry *SE;
+
+      const int lane=acceleratorSIMTlane(Nsimd);
+      int nmu=0;
+
+      for(int point=0;point<geom_v.npoint;point++){
+	SE=Stencil_v.GetEntry(ptype,point,ss);
+	if((!SE->_is_local) && (!Stencil_v.same_node[point]) ) {
+	  nbr = coalescedRead(Stencil_v.CommBuf()[SE->_offset],lane);
+	  for(int bb=0;bb<nbasis;bb++) {
+	    res = res + coalescedRead(Aview_p[point][ss](b,bb),lane)*nbr(bb);
+	  }
+	  nmu++;
+	}
+        acceleratorSynchronise();
+      }
+      if ( nmu ) {
+        auto out_t = coalescedRead(out_v[ss](b),lane);
+        out_t = out_t + res;
+        coalescedWrite(out_v[ss](b),out_t,lane);
+      }
+      });
+      MComputeTime2+=usecond();
 
     MViewTime-=usecond();
     for(int p=0;p<geom.npoint;p++) AcceleratorViewContainer[p].ViewClose();
@@ -1059,22 +1182,25 @@ public:
     if ( MCalls > 0 ) {
       grid_msg("#### M calls report\n");
       grid_msg("CoarsenedMatrix Number of Calls                         : %d\n", (int)MCalls);
-      grid_msg("CoarsenedMatrix MiscTime   /Calls, MiscTime    : %10.2f us, %10.2f us (= %6.2f %%)\n", MMiscTime   /MCalls, MMiscTime,    MMiscTime   /MTotalTime*100);
-      grid_msg("CoarsenedMatrix ViewTime   /Calls, ViewTime    : %10.2f us, %10.2f us (= %6.2f %%)\n", MViewTime   /MCalls, MViewTime,    MViewTime   /MTotalTime*100);
-      grid_msg("CoarsenedMatrix CommTime   /Calls, CommTime    : %10.2f us, %10.2f us (= %6.2f %%)\n", MCommTime   /MCalls, MCommTime,    MCommTime   /MTotalTime*100);
-      grid_msg("CoarsenedMatrix ComputeTime/Calls, ComputeTime : %10.2f us, %10.2f us (= %6.2f %%)\n", MComputeTime/MCalls, MComputeTime, MComputeTime/MTotalTime*100);
-      grid_msg("CoarsenedMatrix TotalTime  /Calls, TotalTime   : %10.2f us, %10.2f us (= %6.2f %%)\n", MTotalTime  /MCalls, MTotalTime,   MTotalTime  /MTotalTime*100);
+      grid_msg("CoarsenedMatrix MiscTime    /Calls, MiscTime     : %10.2f us, %10.2f us (= %6.2f %%)\n", MMiscTime    /MCalls, MMiscTime,     MMiscTime    /MTotalTime*100);
+      grid_msg("CoarsenedMatrix ViewTime    /Calls, ViewTime     : %10.2f us, %10.2f us (= %6.2f %%)\n", MViewTime    /MCalls, MViewTime,     MViewTime    /MTotalTime*100);
+      grid_msg("CoarsenedMatrix CommTime    /Calls, CommTime     : %10.2f us, %10.2f us (= %6.2f %%)\n", MCommTime    /MCalls, MCommTime,     MCommTime    /MTotalTime*100);
+      grid_msg("CoarsenedMatrix FaceTime    /Calls, FaceTime     : %10.2f us, %10.2f us (= %6.2f %%)\n", MFaceTime    /MCalls, MFaceTime,     MFaceTime    /MTotalTime*100);
+      grid_msg("CoarsenedMatrix ComputeTime1/Calls, ComputeTime1 : %10.2f us, %10.2f us (= %6.2f %%)\n", MComputeTime /MCalls, MComputeTime,  MComputeTime /MTotalTime*100);
+      grid_msg("CoarsenedMatrix ComputeTime2/Calls, ComputeTime2 : %10.2f us, %10.2f us (= %6.2f %%)\n", MComputeTime2/MCalls, MComputeTime2, MComputeTime2/MTotalTime*100);
+      grid_msg("CoarsenedMatrix TotalTime   /Calls, TotalTime    : %10.2f us, %10.2f us (= %6.2f %%)\n", MTotalTime   /MCalls, MTotalTime,    MTotalTime   /MTotalTime*100);
 
-      // Average the compute time
+      // Average the compute times
       _grid->GlobalSum(MComputeTime);
-      MComputeTime/=Nproc;
+      _grid->GlobalSum(MComputeTime2);
+      RealD TotalComputeTime = (MComputeTime + MComputeTime2)/Nproc;
       RealD complex_words = 2;
       RealD prec_bytes    = getPrecision<typename CComplex::vector_type>::value * 4; // 4 for float, 8 for double
       RealD flop_per_site = 1.0 * (2 * nbasis * (36 * nbasis - 1));
       RealD word_per_site = 1.0 * (9 * nbasis + 9 * nbasis * nbasis + nbasis);
       RealD byte_per_site = word_per_site * complex_words * prec_bytes;
-      RealD mflops = flop_per_site*volume*MCalls/MComputeTime;
-      RealD mbytes = byte_per_site*volume*MCalls/MComputeTime;
+      RealD mflops = flop_per_site*volume*MCalls/TotalComputeTime;
+      RealD mbytes = byte_per_site*volume*MCalls/TotalComputeTime;
       grid_msg("CoarsenedMatrix Average mflops/s, mbytes/s per call                : %.0f, %.0f\n", mflops, mbytes);
       grid_msg("CoarsenedMatrix Average mflops/s, mbytes/s per call per rank       : %.0f, %.0f\n", mflops/Nproc, mbytes/Nproc);
       grid_msg("CoarsenedMatrix Average mflops/s, mbytes/s per call per node       : %.0f, %.0f\n", mflops/Nnode, mbytes/Nnode);
@@ -1092,12 +1218,14 @@ public:
   }
 
   void ZeroCounters() {
-    MCalls       = 0;
-    MMiscTime    = 0;
-    MCommTime    = 0;
-    MComputeTime = 0;
-    MViewTime    = 0;
-    MTotalTime   = 0;
+    MCalls        = 0;
+    MMiscTime     = 0;
+    MCommTime     = 0;
+    MComputeTime  = 0;
+    MComputeTime2 = 0;
+    MViewTime     = 0;
+    MFaceTime     = 0;
+    MTotalTime    = 0;
 
     Stencil.ZeroCounters();
     StencilEven.ZeroCounters();
