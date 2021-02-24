@@ -118,6 +118,7 @@ void run_benchmark(int* argc, char*** argv) {
   // point field aliases to correct fields
   std::vector<CoarseVector>& src_M           = src_full, res_M           = res_full;
   std::vector<CoarseVector>& src_M_overlapped_comms        = src_full, res_M_overlapped_comms        = res_full;
+  std::vector<CoarseVector>& src_M_shared_memory        = src_full, res_M_shared_memory        = res_full;
   std::vector<CoarseVector>& src_Mdag        = src_full, res_Mdag        = res_full;
   std::vector<CoarseVector>& src_Meooe       = src_e,    res_Meooe       = res_o;
   std::vector<CoarseVector>& src_MeooeDag    = src_e,    res_MeooeDag    = res_o;
@@ -151,6 +152,14 @@ void run_benchmark(int* argc, char*** argv) {
   double flops_M_overlapped_comms          = flops_M;
   double words_M_overlapped_comms          = words_M;
   double nbytes_M_overlapped_comms         = nbytes_M;
+
+  // performance figures -- M_shared_memory
+  double flops_per_site_M_shared_memory = flops_per_site_M;
+  double words_per_site_M_shared_memory = words_per_site_M;
+  double bytes_per_site_M_shared_memory = bytes_per_site_M;
+  double flops_M_shared_memory          = flops_M;
+  double words_M_shared_memory          = words_M;
+  double nbytes_M_shared_memory         = nbytes_M;
 
   // performance figures -- Mdag
   double flops_per_site_Mdag = flops_per_site_M;
@@ -259,14 +268,16 @@ void run_benchmark(int* argc, char*** argv) {
 }
 
   BENCH_OPERATOR_METHOD(M);           PRINT_OPERATOR_METHOD(M);
-  BENCH_OPERATOR_METHOD(M_overlapped_comms);           PRINT_OPERATOR_METHOD(M_overlapped_comms);
-  BENCH_OPERATOR_METHOD(Mdag);        PRINT_OPERATOR_METHOD(Mdag);
-  BENCH_OPERATOR_METHOD(Meooe);       PRINT_OPERATOR_METHOD(Meooe);
-  BENCH_OPERATOR_METHOD(MeooeDag);    PRINT_OPERATOR_METHOD(MeooeDag);
-  BENCH_OPERATOR_METHOD(Mooee);       PRINT_OPERATOR_METHOD(Mooee);
-  BENCH_OPERATOR_METHOD(MooeeDag);    PRINT_OPERATOR_METHOD(MooeeDag);
-  BENCH_OPERATOR_METHOD(MooeeInv);    PRINT_OPERATOR_METHOD(MooeeInv);
-  BENCH_OPERATOR_METHOD(MooeeInvDag); PRINT_OPERATOR_METHOD(MooeeInvDag);
+  // BENCH_OPERATOR_METHOD(M_overlapped_comms);           PRINT_OPERATOR_METHOD(M_overlapped_comms);
+  BENCH_OPERATOR_METHOD(M_shared_memory);           PRINT_OPERATOR_METHOD(M_shared_memory);
+  // BENCH_OPERATOR_METHOD(Mdag);        PRINT_OPERATOR_METHOD(Mdag);
+  // BENCH_OPERATOR_METHOD_UIAE(Dhop);   PRINT_OPERATOR_METHOD(Dhop);
+  // BENCH_OPERATOR_METHOD(Meooe);       PRINT_OPERATOR_METHOD(Meooe);
+  // BENCH_OPERATOR_METHOD(MeooeDag);    PRINT_OPERATOR_METHOD(MeooeDag);
+  // BENCH_OPERATOR_METHOD(Mooee);       PRINT_OPERATOR_METHOD(Mooee);
+  // BENCH_OPERATOR_METHOD(MooeeDag);    PRINT_OPERATOR_METHOD(MooeeDag);
+  // BENCH_OPERATOR_METHOD(MooeeInv);    PRINT_OPERATOR_METHOD(MooeeInv);
+  // BENCH_OPERATOR_METHOD(MooeeInvDag); PRINT_OPERATOR_METHOD(MooeeInvDag);
 
 #undef BENCH_OPERATOR_METHOD
 #undef PRINT_OPERATOR_METHOD

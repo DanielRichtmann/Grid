@@ -295,6 +295,67 @@ public:
 
 };
 
+// template<class CoarseVectorView, class StencilView, class GaugeView>
+// __global__ void M_gpu_kernel(CoarseVectorView& out_v, const CoarseVectorView& in_v, StencilView& Stencil_v, GaugeView* Aview_p, int Nsite, int nbasis, int Npoint, int Nsimd) {
+// __global__ void M_gpu_kernel(CoarseVectorView* out_v, const CoarseVectorView* in_v, const CoarseVectorView* buf, StencilView& Stencil_v, GaugeView* Aview_p, int Nsite, int nbasis, int Npoint, int Nsimd) {
+template<class CoarseVectorView, class GaugeView>
+__global__ void M_gpu_kernel(CoarseVectorView* out_v, const CoarseVectorView* in_v, const CoarseVectorView* buf, GaugeView* Aview_p, int Nsite, int nbasis, int Npoint, int Nsimd) {
+  uint64_t sss   = threadIdx.x + blockDim.x*blockIdx.x;
+  uint64_t point = threadIdx.y + blockDim.y*blockIdx.y;
+  uint64_t lane  = threadIdx.z;
+
+  if ( (sss < Nsite*nbasis) && (point<Npoint) && (lane<Nsimd) ) {
+    uint64_t ss = sss/nbasis;
+    uint64_t b  = sss%nbasis;
+
+    typedef decltype(coalescedRead(in_v[0]))    calcVector;
+    typedef decltype(coalescedRead(in_v[0](0))) calcComplex;
+
+    extern __shared__ __align__(COALESCE_GRANULARITY) unsigned char shmem_pointer[];
+    calcComplex* sdata = (calcComplex*)shmem_pointer;
+
+    calcComplex res = Zero();
+    calcVector nbr;
+    int ptype;
+    StencilEntry *SE;
+
+    // SE=Stencil_v.GetEntry(ptype,point,ss);
+
+    // if(0) {
+    //   nbr = coalescedReadPermute(in_v[ss],ptype,0);
+    // } else {
+      nbr = coalescedRead(buf[ss]);
+    // }
+    acceleratorSynchronise();
+
+    for(int bb=0;bb<nbasis;bb++) {
+      res = res + coalescedRead(Aview_p[point][ss](b,bb))*nbr(bb);
+    }
+
+    // write to shared memory
+    if(point != 0) {
+      // cannot use overloaded operators for calcComplex as they are not volatile-qualified
+      memcpy((void*)&sdata[point*Nsimd+lane], (void*)&res, sizeof(calcComplex));
+    }
+
+    // synchronize threads within block
+    acceleratorSynchroniseAll();
+
+    // do reduction over shared memory
+    if(point == 0) {
+      calcComplex tmp = Zero();
+      for(int p=1; p<Npoint; p++) {
+        // cannot use overloaded operators for calcComplex as they are not volatile-qualified
+        memcpy((void*)&tmp, (void*)&sdata[p*Nsimd+lane], sizeof(calcComplex));
+        res += tmp;
+      }
+
+      // write to global memory
+      coalescedWrite(out_v[ss](b),res);
+    }
+  }
+}
+
 // Fine Object == (per site) type of fine field
 // nbasis      == number of deflation vectors
 template<class Fobj,class CComplex,int nbasis>
@@ -422,6 +483,148 @@ public:
     MViewTime+=usecond();
     MTotalTime+=usecond();
   };
+
+  #if 1
+  void M_shared_memory (const CoarseVector &in, CoarseVector &out)
+  {
+    MCalls++;
+    MTotalTime-=usecond();
+    MMiscTime-=usecond();
+    conformable(_grid,in.Grid());
+    conformable(in.Grid(),out.Grid());
+    out.Checkerboard() = in.Checkerboard();
+
+    SimpleCompressor<siteVector> compressor;
+    MMiscTime+=usecond();
+
+    MCommTime-=usecond();
+    Stencil.HaloExchange(in,compressor);
+    MCommTime+=usecond();
+    MViewTime-=usecond();
+    autoView( in_v , in, AcceleratorRead);
+    autoView( out_v , out, AcceleratorWrite);
+    autoView( Stencil_v  , Stencil, AcceleratorRead);
+    auto& geom_v = geom;
+    typedef LatticeView<Cobj> Aview;
+
+    Vector<Aview> AcceleratorViewContainer;
+
+    for(int p=0;p<geom.npoint;p++) AcceleratorViewContainer.push_back(A[p].View(AcceleratorRead));
+    Aview *Aview_p = & AcceleratorViewContainer[0];
+    MViewTime+=usecond();
+
+    const int Nsimd = CComplex::Nsimd();
+    typedef decltype(coalescedRead(in_v[0])) calcVector;
+    typedef decltype(coalescedRead(in_v[0](0))) calcComplex;
+
+    const int osites=Grid()->oSites();
+    const int npoint = 2*Nd+1;
+
+    // typedef typename CComplex::vector_type::scalar_type shmem_unit;
+
+    MComputeTime-=usecond();
+    // auto defaultAccThreads = acceleratorThreads(); acceleratorThreads(1);
+    accelerator_for2d_sharedmem(sss, Grid()->oSites()*nbasis, point, npoint, calcComplex, Nsimd, {
+#if defined(EXPERIMENT)
+      unsigned int _sss = sss;
+      int_fastdiv nbasis_fd = nbasis;
+      int ss = _sss/nbasis_fd;
+      int b  = _sss%nbasis_fd;
+#else
+      int ss = sss/nbasis;
+      int b  = sss%nbasis;
+#endif
+      calcComplex res = Zero();
+      calcVector nbr;
+      int ptype;
+      StencilEntry *SE;
+
+      const int lane = acceleratorSIMTlane(Nsimd);
+
+      // size controlled externally
+      // calcComplex* sdata = (calcComplex*)shmem_pointer;
+
+      // size given here!
+      __shared__ __align__(COALESCE_GRANULARITY) unsigned char shmem_pointer[npoint*Nsimd*sizeof(calcComplex)];
+      calcComplex* sdata = (calcComplex*)shmem_pointer;
+
+      SE=Stencil_v.GetEntry(ptype,point,ss);
+
+      if(SE->_is_local) {
+        nbr = coalescedReadPermute(in_v[SE->_offset],ptype,SE->_permute,lane);
+      } else {
+        nbr = coalescedRead(Stencil_v.CommBuf()[SE->_offset],lane);
+      }
+      acceleratorSynchronise();
+
+      for(int bb=0;bb<nbasis;bb++) {
+        res = res + coalescedRead(Aview_p[point][ss](b,bb),lane)*nbr(bb);
+      }
+
+      // write to shared memory
+      if(point != 0) {
+        // cannot use overloaded operators for calcComplex as they are not volatile-qualified
+        memcpy((void*)&sdata[point*Nsimd+lane], (void*)&res, sizeof(calcComplex));
+      }
+
+      // synchronize threads within block
+      acceleratorSynchroniseAll();
+
+      // do reduction over shared memory
+      if(point == 0) {
+        calcComplex tmp = Zero();
+        for(int p=1; p<2*Nd; p++) {
+          // cannot use overloaded operators for calcComplex as they are not volatile-qualified
+          memcpy((void*)&tmp, (void*)&sdata[p*Nsimd+lane], sizeof(calcComplex));
+          res += tmp;
+        }
+
+        // write to global memory
+        coalescedWrite(out_v[ss](b),res);
+      }
+    });
+    // acceleratorThreads(defaultAccThreads);
+    MComputeTime+=usecond();
+
+    MViewTime-=usecond();
+    for(int p=0;p<geom.npoint;p++) AcceleratorViewContainer[p].ViewClose();
+    MViewTime+=usecond();
+    MTotalTime+=usecond();
+  };
+  #else
+  void M_shared_memory (const CoarseVector &in, CoarseVector &out)
+  {
+    conformable(_grid,in.Grid());
+    conformable(in.Grid(),out.Grid());
+    out.Checkerboard() = in.Checkerboard();
+
+    SimpleCompressor<siteVector> compressor;
+    Stencil.HaloExchange(in,compressor);
+
+    autoView( in_v , in, AcceleratorRead);
+    autoView( out_v , out, AcceleratorWrite);
+    autoView( Stencil_v  , Stencil, AcceleratorRead);
+    typedef decltype(coalescedRead(in_v[0]))    calcVector;
+    typedef decltype(coalescedRead(in_v[0](0))) calcComplex;
+    typedef LatticeView<Cobj> Aview;
+    Vector<Aview> AcceleratorViewContainer;
+    for(int p=0;p<geom.npoint;p++) AcceleratorViewContainer.push_back(A[p].View(AcceleratorRead));
+    Aview *Aview_p = & AcceleratorViewContainer[0];
+
+    const Integer Nsimd = CComplex::Nsimd();
+    const Integer oSites = in.Grid()->oSites();
+    const Integer Npoint = geom.npoint-1; // change to 8 here on purpose, then multiple of warp size!
+
+    int nt=1;
+    dim3 cu_threads(nt,Npoint,Nsimd);
+    dim3 cu_blocks ((oSites*nbasis+nt-1)/nt,1,1);
+    int shmem_size = Npoint*Nsimd*sizeof(calcComplex);
+    // M_gpu_kernel<<<cu_blocks,cu_threads,shmem_size>>>(&out_v[0], &in_v[0], Stencil.CommBuf(), Stencil_v, Aview_p, oSites, nbasis, Npoint, Nsimd);
+    // M_gpu_kernel<<<cu_blocks,cu_threads,shmem_size>>>(&out_v[0], &in_v[0], Stencil.CommBuf(), Stencil_v, Aview_p, oSites, nbasis, Npoint, Nsimd);
+    M_gpu_kernel<<<cu_blocks,cu_threads,shmem_size>>>(&out_v[0], &in_v[0], Stencil.CommBuf(), Aview_p, oSites, nbasis, Npoint, Nsimd);
+    accelerator_barrier();
+  }
+  #endif
 
   void M_overlapped_comms (const CoarseVector &in, CoarseVector &out)
   {

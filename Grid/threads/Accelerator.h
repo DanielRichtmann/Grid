@@ -110,6 +110,40 @@ accelerator_inline int acceleratorSIMTlane(int Nsimd) {
 #endif
 } // CUDA specific
 
+// will be using the second dimension for the reduction
+// -> need nsimd * size of 2nd dimension * sizeof(datatype) as shmem size
+#define accelerator_for2d_sharedmem_NB( iter1, num1, iter2, num2, dtype, nsimd, ... ) \
+  {									\
+    typedef uint64_t Iterator;						\
+    auto lambda = [=] __device__					\
+      (Iterator iter1,Iterator iter2,Iterator lane) mutable {		\
+      __VA_ARGS__;							\
+    };									\
+    int nt=acceleratorThreads();					\
+    dim3 cu_threads(acceleratorThreads(),num2,nsimd);			\
+    dim3 cu_blocks ((num1+nt-1)/nt,1,1);				\
+    LambdaApply<<<cu_blocks,cu_threads>>>(num1,num2,nsimd,lambda); \
+  }
+// these were for trying to set up the amount of shared memory outside the lambda
+// Iterator shmem_size = acceleratorThreads()*num2*nsimd*sizeof(dtype);    \
+// LambdaApplyShMem<<<cu_blocks,cu_threads,shmem_size>>>(num1,num2,nsimd,lambda); \
+
+#define accelerator_for2d_sharedmem(iter1, num1, iter2, num2, dtype, nsimd, ... ) \
+  accelerator_for2d_sharedmem_NB(iter1, num1, iter2, num2, dtype, nsimd, { __VA_ARGS__ } ); \
+  accelerator_barrier(dummy);
+
+template<typename lambda>  __global__
+void LambdaApplyShMem(uint64_t num1, uint64_t num2, uint64_t num3, lambda Lambda)
+{
+  extern __shared__ __align__(GEN_SIMD_WIDTH) unsigned char shmem_pointer[];
+  uint64_t x = threadIdx.x + blockDim.x*blockIdx.x;
+  uint64_t y = threadIdx.y + blockDim.y*blockIdx.y;
+  uint64_t z = threadIdx.z;
+  if ( (x < num1) && (y<num2) && (z<num3) ) {
+    Lambda(x,y,z);
+  }
+}
+
 #define accelerator_for2dNB( iter1, num1, iter2, num2, nsimd, ... )	\
   {									\
     int nt=acceleratorThreads();					\
