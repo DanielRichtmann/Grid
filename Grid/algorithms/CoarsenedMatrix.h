@@ -70,6 +70,7 @@ public:
   int base;
   std::vector<int> directions   ;
   std::vector<int> displacements;
+  std::vector<int> points_dagger;
 
   Geometry(int _d)  {
     
@@ -81,14 +82,18 @@ public:
     npoint = 2*_d+1;
     directions.resize(npoint);
     displacements.resize(npoint);
+    points_dagger.resize(npoint);
     for(int d=0;d<_d;d++){
       directions[d   ] = d+base;
       directions[d+_d] = d+base;
       displacements[d  ] = +1;
       displacements[d+_d]= -1;
+      points_dagger[d   ] = d+_d;
+      points_dagger[d+_d] = d;
     }
     directions   [2*_d]=0;
     displacements[2*_d]=0;
+    points_dagger[2*_d]=2*_d;
   }
 
   int point(int dir, int disp) {
@@ -398,6 +403,8 @@ public:
   CoarseMatrix AselfInv;
   CoarseMatrix AselfInvEven;
   CoarseMatrix AselfInvOdd;
+
+  Vector<RealD> dag_factor;
 
   double MCalls;
   double MMiscTime;
@@ -784,17 +791,22 @@ public:
 
     int osites=Grid()->oSites();
 
+    Vector<int> points(geom.npoint, 0);
+    for(int p=0; p<geom.npoint; p++)
+      points[p] = geom.points_dagger[p];
+
+    RealD* dag_factor_p = &dag_factor[0];
+
     accelerator_for(sss, Grid()->oSites()*nbasis, Nsimd, {
       int ss = sss/nbasis;
       int b  = sss%nbasis;
-      int nb = nbasis>>1;
       calcComplex res = Zero();
       calcVector nbr;
       int ptype;
       StencilEntry *SE;
 
       for(int p=0;p<geom_v.npoint;p++){
-        int point = p;
+        int point = points[p];
 
 	SE=Stencil_v.GetEntry(ptype,point,ss);
 
@@ -805,14 +817,9 @@ public:
 	}
 	acceleratorSynchronise();
 
-	for(int bb=0;bb<nb;bb++) {
-	  res = res + coalescedRead(Aview_p[point][ss](b,bb))*nbr(bb);
+	for(int bb=0;bb<nbasis;bb++) {
+	  res = res + dag_factor_p[b*nbasis+bb]*coalescedRead(Aview_p[point][ss](b,bb))*nbr(bb);
 	}
-	res = -res;
-	for(int bb=nb;bb<nbasis;bb++) {
-	  res = res + coalescedRead(Aview_p[point][ss](b,bb))*nbr(bb);
-	}
-	if(b < nb) res = -res;
       }
       coalescedWrite(out_v[ss](b),res);
       });
@@ -987,11 +994,12 @@ public:
     typedef decltype(coalescedRead(in_v[0])) calcVector;
     typedef decltype(coalescedRead(in_v[0](0))) calcComplex;
 
+    RealD* dag_factor_p = &dag_factor[0];
+
     if(dag) {
       accelerator_for(sss, in.Grid()->oSites()*nbasis, Nsimd, {
         int ss = sss/nbasis;
         int b  = sss%nbasis;
-        int nb = nbasis>>1;
         calcComplex res = Zero();
         calcVector nbr;
         int ptype;
@@ -1006,14 +1014,9 @@ public:
         }
         acceleratorSynchronise();
 
-        for(int bb=0;bb<nb;bb++) {
-          res = res + coalescedRead(a_v[ss](b,bb))*nbr(bb);
+        for(int bb=0;bb<nbasis;bb++) {
+          res = res + dag_factor_p[b*nbasis+bb]*coalescedRead(a_v[ss](b,bb))*nbr(bb);
         }
-        res = -res;
-        for(int bb=nb;bb<nbasis;bb++) {
-          res = res + coalescedRead(a_v[ss](b,bb))*nbr(bb);
-        }
-        if(b < nb) res = -res;
         coalescedWrite(out_v[ss](b),res);
       });
     } else {
@@ -1054,6 +1057,9 @@ public:
 
     // determine in what order we need the points
     int npoint = geom.npoint-1;
+    Vector<int> points(npoint, 0);
+    for(int p=0; p<npoint; p++)
+      points[p] = (dag && !hermitian) ? geom.points_dagger[p] : p;
 
     Vector<Aview> AcceleratorViewContainer;
     for(int p=0;p<npoint;p++) AcceleratorViewContainer.push_back(a[p].View(AcceleratorRead));
@@ -1063,18 +1069,19 @@ public:
     typedef decltype(coalescedRead(in_v[0])) calcVector;
     typedef decltype(coalescedRead(in_v[0](0))) calcComplex;
 
+    RealD* dag_factor_p = &dag_factor[0];
+
     if(dag) {
       accelerator_for(sss, in.Grid()->oSites()*nbasis, Nsimd, {
         int ss = sss/nbasis;
         int b  = sss%nbasis;
-        int nb = nbasis>>1;
         calcComplex res = Zero();
         calcVector nbr;
         int ptype;
         StencilEntry *SE;
 
         for(int p=0;p<npoint;p++){
-          int point = p;
+          int point = points[p];
           SE=st_v.GetEntry(ptype,point,ss);
 
           if(SE->_is_local) {
@@ -1084,14 +1091,9 @@ public:
           }
           acceleratorSynchronise();
 
-          for(int bb=0;bb<nb;bb++) {
-            res = res + coalescedRead(Aview_p[point][ss](b,bb))*nbr(bb);
+          for(int bb=0;bb<nbasis;bb++) {
+            res = res + dag_factor_p[b*nbasis+bb]*coalescedRead(Aview_p[point][ss](b,bb))*nbr(bb);
           }
-          res = -res;
-          for(int bb=nb;bb<nbasis;bb++) {
-            res = res + coalescedRead(Aview_p[point][ss](b,bb))*nbr(bb);
-          }
-          if(b < nb) res = -res;
         }
         coalescedWrite(out_v[ss](b),res);
       });
@@ -1105,7 +1107,7 @@ public:
         StencilEntry *SE;
 
         for(int p=0;p<npoint;p++){
-          int point = p;
+          int point = points[p];
           SE=st_v.GetEntry(ptype,point,ss);
 
           if(SE->_is_local) {
@@ -1159,9 +1161,27 @@ public:
     Aodd(geom.npoint,&CoarseRBGrid),
     AselfInv(&CoarseGrid),
     AselfInvEven(&CoarseRBGrid),
-    AselfInvOdd(&CoarseRBGrid)
+    AselfInvOdd(&CoarseRBGrid),
+    dag_factor(nbasis*nbasis)
   {
+    fillFactor();
   };
+
+  void fillFactor() {
+    Eigen::MatrixXd dag_factor_eigen = Eigen::MatrixXd::Ones(nbasis, nbasis);
+    if(!hermitian) {
+      const int nb = nbasis/2;
+      dag_factor_eigen.block(0,nb,nb,nb) *= -1.0;
+      dag_factor_eigen.block(nb,0,nb,nb) *= -1.0;
+    }
+
+    // GPU readable prefactor
+    thread_for(i, nbasis*nbasis, {
+      int j = i/nbasis;
+      int k = i%nbasis;
+      dag_factor[i] = dag_factor_eigen(j, k);
+    });
+  }
 
   void CoarsenOperator(GridBase *FineGrid,LinearOperatorBase<Lattice<Fobj> > &linop,
 		       Aggregation<Fobj,CComplex,nbasis> & Subspace)
