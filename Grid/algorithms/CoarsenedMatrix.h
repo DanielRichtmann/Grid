@@ -300,6 +300,7 @@ public:
 
 };
 
+#if defined(GRID_CUDA)
 // template<class CoarseVectorView, class StencilView, class GaugeView>
 // __global__ void M_gpu_kernel(CoarseVectorView& out_v, const CoarseVectorView& in_v, StencilView& Stencil_v, GaugeView* Aview_p, int Nsite, int nbasis, int Npoint, int Nsimd) {
 // __global__ void M_gpu_kernel(CoarseVectorView* out_v, const CoarseVectorView* in_v, const CoarseVectorView* buf, StencilView& Stencil_v, GaugeView* Aview_p, int Nsite, int nbasis, int Npoint, int Nsimd) {
@@ -360,6 +361,7 @@ __global__ void M_gpu_kernel(CoarseVectorView* out_v, const CoarseVectorView* in
     }
   }
 }
+#endif
 
 // Fine Object == (per site) type of fine field
 // nbasis      == number of deflation vectors
@@ -491,6 +493,7 @@ public:
     MTotalTime+=usecond();
   };
 
+#if defined(GRID_CUDA)
   #if 1
   void M_shared_memory (const CoarseVector &in, CoarseVector &out)
   {
@@ -632,6 +635,7 @@ public:
     accelerator_barrier();
   }
   #endif
+#endif
 
   void M_overlapped_comms (const CoarseVector &in, CoarseVector &out)
   {
